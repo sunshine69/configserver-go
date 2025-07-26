@@ -1,21 +1,37 @@
 server:
   port: "8888"
-  username: "config"
-  password: "secret"
+  backend: "filesystem"  # "filesystem" or "git"
+  users:
+    # Symmetric encryption user
+    - username: "admin"
+      password: "admin123"
+      # encryption_key: "bXlzZWNyZXRrZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="  # base64 random bytes
+      encryption_key: 'mgZSpvHRFID43Xf7YwT9NAqYEZc1bgh6P4+U0IOtaueJnkUb0ucRg5Ur8rvzYN46'
 
-# List of allowed directories to serve files from
-directories:
-  - directory: "/etc/config"
-  - directory: "/home/user/configs"
-  - directory: "/mnt/portdata/tmp/configfiles"
+    # Asymmetric encryption user (no encryption_key means use RSA)
+    # - username: "secure"
+    #   password: "secure123"
+    #   key: "/path/to/private.pem"   # RSA private key
+    #   cert: "/path/to/public.pem"   # RSA public key or certificate
 
-# Encryption configuration
-encryption:
-  type: "symmetric"  # "symmetric" or "asymmetric"
-  # For symmetric (AES-256): base64 encoded 32-byte key
-  key: "bXlzZWNyZXRrZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+    # Another symmetric user with different key
+    # - username: "dev"
+    #   password: "dev123"
+    #   encryption_key: "ZGV2c2VjcmV0a2V5MTIzNDU2Nzg5MDEyMzQ1Njc4OTA="   # different key for dev
 
-  # For asymmetric (RSA) - uncomment and set paths:
-  # type: "asymmetric"
-  # public_key: "/path/to/public.pem"
-  # private_key: "/path/to/private.pem"
+# Backend configuration organized by backend type
+backend_config:
+  # Filesystem backend configuration
+  filesystem:
+    directories:
+      - directory: "/mnt/portdata/tmp/configfiles"
+
+  # Git backend configuration
+  git:
+    uri: "https://github.com/myorg/config-repo.git"
+    search_paths: "/,/configs,/application-configs"  # comma-separated
+    username: "git-user"           # optional for private repos
+    password: "git-token"          # optional for private repos
+    default_label: "main"          # default branch/tag
+    clone_on_start: true
+    local_repo: "./git-repo"       # local clone directory
