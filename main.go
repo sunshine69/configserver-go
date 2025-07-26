@@ -97,7 +97,7 @@ func LoadConfig(configFile string) (*Config, error) {
 func NewConfigServer(config *Config) (*ConfigServer, error) {
 	cs := &ConfigServer{
 		config:      config,
-		cipherRegex: regexp.MustCompile(`\{cipher\}([A-Za-z0-9+/=]+)`),
+		cipherRegex: regexp.MustCompile(`'\{cipher\}([A-Za-z0-9+/=]+)'`),
 	}
 
 	// Setup encryption based on type
@@ -309,8 +309,8 @@ func (cs *ConfigServer) processFileContent(content []byte) ([]byte, error) {
 	// Find all {cipher}xxx patterns and decrypt them
 	result := cs.cipherRegex.ReplaceAllStringFunc(contentStr, func(match string) string {
 		// Extract the encrypted data (remove {cipher} prefix)
-		encryptedData := strings.TrimPrefix(match, "{cipher}")
-
+		encryptedData := strings.TrimPrefix(match, "'{cipher}")
+		encryptedData = strings.TrimSuffix(encryptedData, "'")
 		// Decrypt the data
 		decrypted, err := cs.decrypt(encryptedData)
 		if err != nil {
