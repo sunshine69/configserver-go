@@ -1,0 +1,21 @@
+server:
+  port: "8888"
+  username: "config"
+  password: "secret"
+
+# List of allowed directories to serve files from
+directories:
+  - directory: "/etc/config"
+  - directory: "/home/user/configs"
+  - directory: "/mnt/portdata/tmp/configfiles"
+
+# Encryption configuration
+encryption:
+  type: "symmetric"  # "symmetric" or "asymmetric"
+  # For symmetric (AES-256): base64 encoded 32-byte key
+  key: "bXlzZWNyZXRrZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+
+  # For asymmetric (RSA) - uncomment and set paths:
+  # type: "asymmetric"
+  # public_key: "/path/to/public.pem"
+  # private_key: "/path/to/private.pem"
