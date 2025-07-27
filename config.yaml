@@ -1,23 +1,22 @@
 server:
   port: "8888"
-  backend: "filesystem"  # "filesystem" or "git"
   users:
     # Symmetric encryption user
     - username: "admin"
       password: "admin123"
       # encryption_key: "bXlzZWNyZXRrZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="  # base64 random bytes
       encryption_key: 'mgZSpvHRFID43Xf7YwT9NAqYEZc1bgh6P4+U0IOtaueJnkUb0ucRg5Ur8rvzYN46'
+      directory: '/mnt/portdata/tmp/configfiles'
+      backend: 'filesystem' # file system or git or auto; if auto then auto detect the directory to see if it is git or pure file system and select
 
     # Asymmetric encryption user (no encryption_key means use RSA)
-    # - username: "secure"
-    #   password: "secure123"
-    #   key: "/path/to/private.pem"   # RSA private key
-    #   cert: "/path/to/public.pem"   # RSA public key or certificate
+    - username: "secure"
+      password: "secure123"
+      key: "/path/to/private.pem"   # RSA private key
+      cert: "/path/to/public.pem"   # RSA public key or certificate
+      directory: '/path/to/config/files'
+      backend: 'filesystem' # file system or git or auto; if auto then auto detect the directory to see if it is git or pure file system and
 
-    # Another symmetric user with different key
-    # - username: "dev"
-    #   password: "dev123"
-    #   encryption_key: "ZGV2c2VjcmV0a2V5MTIzNDU2Nzg5MDEyMzQ1Njc4OTA="   # different key for dev
 
 # Backend configuration organized by backend type
 backend_config:

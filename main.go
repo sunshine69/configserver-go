@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -23,579 +22,195 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Configuration structures
 type Config struct {
-	Server struct {
-		Port    string `yaml:"port"`
-		Users   []User `yaml:"users"`
-		Backend string `yaml:"backend"` // "filesystem" or "git"
-	} `yaml:"server"`
-	Backend BackendConfig `yaml:"backend_config"`
+	Server        ServerConfig     `yaml:"server"`
+	BackendConfig BackendConfigMap `yaml:"backend_config"`
+}
+
+type ServerConfig struct {
+	Port  string `yaml:"port"`
+	Users []User `yaml:"users"`
 }
 
 type User struct {
 	Username      string `yaml:"username"`
 	Password      string `yaml:"password"`
-	EncryptionKey string `yaml:"encryption_key,omitempty"` // base64 encoded key for symmetric
-	Key           string `yaml:"key,omitempty"`            // path to private key for asymmetric
-	Cert          string `yaml:"cert,omitempty"`           // path to public key/cert for asymmetric
+	EncryptionKey string `yaml:"encryption_key"`
+	Key           string `yaml:"key"`
+	Cert          string `yaml:"cert"`
+	Directory     string `yaml:"directory"`
+	Backend       string `yaml:"backend"`
 }
 
-type BackendConfig struct {
-	Filesystem *FilesystemConfig `yaml:"filesystem,omitempty"`
-	Git        *GitConfig        `yaml:"git,omitempty"`
+type BackendConfigMap struct {
+	Filesystem FilesystemConfig `yaml:"filesystem"`
+	Git        GitConfig        `yaml:"git"`
 }
 
 type FilesystemConfig struct {
 	Directories []DirectoryConfig `yaml:"directories"`
 }
 
-type GitConfig struct {
-	URI          string `yaml:"uri"`
-	SearchPaths  string `yaml:"search_paths"`            // comma-separated paths
-	Username     string `yaml:"username,omitempty"`      // git username
-	Password     string `yaml:"password,omitempty"`      // git password/token
-	DefaultLabel string `yaml:"default_label,omitempty"` // default branch/tag
-	CloneOnStart bool   `yaml:"clone_on_start,omitempty"`
-	LocalRepo    string `yaml:"local_repo,omitempty"` // local clone path
-}
-
 type DirectoryConfig struct {
 	Directory string `yaml:"directory"`
 }
 
-// Backend interface for different config sources
-type Backend interface {
-	GetFile(path, application, profile, label string) ([]byte, error)
-	ListFiles(path string) ([]string, error)
-	Initialize() error
+type GitConfig struct {
+	URI          string `yaml:"uri"`
+	SearchPaths  string `yaml:"search_paths"`
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
+	DefaultLabel string `yaml:"default_label"`
+	CloneOnStart bool   `yaml:"clone_on_start"`
+	LocalRepo    string `yaml:"local_repo"`
 }
 
-type ConfigServer struct {
-	config      *Config
-	backend     Backend
-	users       map[string]*User
-	userRSAKeys map[string]*UserRSAKeys // Cache for user RSA keys
-	cipherRegex *regexp.Regexp
+// Response structures
+type ConfigResponse struct {
+	Label           *string          `json:"label"`
+	Name            string           `json:"name"`
+	Profiles        []string         `json:"profiles"`
+	PropertySources []PropertySource `json:"propertySources"`
+	State           *string          `json:"state"`
+	Version         *string          `json:"version"`
 }
 
-type UserRSAKeys struct {
-	PrivateKey *rsa.PrivateKey
-	PublicKey  *rsa.PublicKey
+type PropertySource struct {
+	Name   string                 `json:"name"`
+	Source map[string]interface{} `json:"source"`
 }
 
-type EncryptRequest struct {
-	Data string `json:"data"`
-}
+// Global variables
+var config Config
+var users map[string]*User
 
-type EncryptResponse struct {
-	Data string `json:"data"`
-}
-
-type DecryptRequest struct {
-	Data string `json:"data"`
-}
-
-type DecryptResponse struct {
-	Data string `json:"data"`
-}
-
-// Filesystem Backend Implementation
-type FilesystemBackend struct {
-	directories []string
-}
-
-func NewFilesystemBackend(config BackendConfig) *FilesystemBackend {
-	var dirs []string
-	if config.Filesystem != nil {
-		for _, dir := range config.Filesystem.Directories {
-			dirs = append(dirs, dir.Directory)
-		}
-	}
-	return &FilesystemBackend{directories: dirs}
-}
-
-func (fb *FilesystemBackend) Initialize() error {
-	for _, dir := range fb.directories {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			return fmt.Errorf("directory does not exist: %s", dir)
-		}
-	}
-	return nil
-}
-
-func (fb *FilesystemBackend) isDirectoryAllowed(dirPath string) bool {
-	for _, allowedDir := range fb.directories {
-		if dirPath == allowedDir {
-			return true
-		}
-	}
-	return false
-}
-
-func (fb *FilesystemBackend) GetFile(path, application, profile, label string) ([]byte, error) {
-	// For filesystem, we use the path directly
-	fullPath := "/" + strings.TrimPrefix(path, "/")
-	dirPath := filepath.Dir(fullPath)
-
-	if !fb.isDirectoryAllowed(dirPath) {
-		return nil, fmt.Errorf("directory not allowed: %s", dirPath)
-	}
-
-	return os.ReadFile(fullPath)
-}
-
-func (fb *FilesystemBackend) ListFiles(path string) ([]string, error) {
-	fullPath := "/" + strings.TrimPrefix(path, "/")
-	dirPath := filepath.Dir(fullPath)
-
-	if !fb.isDirectoryAllowed(dirPath) {
-		return nil, fmt.Errorf("directory not allowed: %s", dirPath)
-	}
-
-	files, err := os.ReadDir(fullPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var fileNames []string
-	for _, file := range files {
-		fileNames = append(fileNames, file.Name())
-	}
-	return fileNames, nil
-}
-
-// Git Backend Implementation
-type GitBackend struct {
-	uri          string
-	searchPaths  []string
-	username     string
-	password     string
-	defaultLabel string
-	localRepo    string
-}
-
-func NewGitBackend(config BackendConfig) *GitBackend {
-	if config.Git == nil {
-		return nil
-	}
-
-	gitConfig := config.Git
-	searchPaths := []string{"/"}
-	if gitConfig.SearchPaths != "" {
-		searchPaths = strings.Split(gitConfig.SearchPaths, ",")
-		for i, path := range searchPaths {
-			searchPaths[i] = strings.TrimSpace(path)
-		}
-	}
-
-	defaultLabel := "main"
-	if gitConfig.DefaultLabel != "" {
-		defaultLabel = gitConfig.DefaultLabel
-	}
-
-	localRepo := gitConfig.LocalRepo
-	if localRepo == "" {
-		localRepo = "./git-repo"
-	}
-
-	return &GitBackend{
-		uri:          gitConfig.URI,
-		searchPaths:  searchPaths,
-		username:     gitConfig.Username,
-		password:     gitConfig.Password,
-		defaultLabel: defaultLabel,
-		localRepo:    localRepo,
-	}
-}
-
-func (gb *GitBackend) Initialize() error {
-	if gb.uri == "" {
-		return fmt.Errorf("git URI is required")
-	}
-
-	// Clone or update repository
-	if _, err := os.Stat(gb.localRepo); os.IsNotExist(err) {
-		return gb.cloneRepo()
-	} else {
-		return gb.pullRepo()
-	}
-}
-
-func (gb *GitBackend) cloneRepo() error {
-	cmd := exec.Command("git", "clone", gb.uri, gb.localRepo)
-	if gb.username != "" && gb.password != "" {
-		// For HTTPS with auth, modify the URL
-		authURL := strings.Replace(gb.uri, "https://", fmt.Sprintf("https://%s:%s@", gb.username, gb.password), 1)
-		cmd = exec.Command("git", "clone", authURL, gb.localRepo)
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to clone repo: %v, output: %s", err, output)
-	}
-	return nil
-}
-
-func (gb *GitBackend) pullRepo() error {
-	cmd := exec.Command("git", "-C", gb.localRepo, "pull")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to pull repo: %v, output: %s", err, output)
-	}
-	return nil
-}
-
-func (gb *GitBackend) checkoutLabel(label string) error {
-	if label == "" {
-		label = gb.defaultLabel
-	}
-
-	cmd := exec.Command("git", "-C", gb.localRepo, "checkout", label)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to checkout %s: %v, output: %s", label, err, output)
-	}
-	return nil
-}
-
-// Parse Spring Cloud Config path: /{application}/{profile}/{label}/{path}
-// or /{application}-{profile}.{extension} format
-func (gb *GitBackend) parsePath(requestPath string) (application, profile, label, filePath string) {
-	parts := strings.Split(strings.Trim(requestPath, "/"), "/")
-
-	if len(parts) >= 4 {
-		// Format: /{application}/{profile}/{label}/{path...}
-		application = parts[0]
-		profile = parts[1]
-		label = parts[2]
-		filePath = strings.Join(parts[3:], "/")
-	} else if len(parts) >= 3 {
-		// Format: /{application}/{profile}/{path...}
-		application = parts[0]
-		profile = parts[1]
-		label = gb.defaultLabel
-		filePath = strings.Join(parts[2:], "/")
-	} else if len(parts) == 1 {
-		// Try to parse application-profile.extension format
-		filename := parts[0]
-		if strings.Contains(filename, "-") && strings.Contains(filename, ".") {
-			nameExt := strings.Split(filename, ".")
-			appProfile := strings.Split(nameExt[0], "-")
-			if len(appProfile) >= 2 {
-				application = appProfile[0]
-				profile = strings.Join(appProfile[1:], "-")
-				label = gb.defaultLabel
-				filePath = filename
-			}
-		} else {
-			application = "application"
-			profile = "default"
-			label = gb.defaultLabel
-			filePath = filename
-		}
-	}
-
-	return
-}
-
-func (gb *GitBackend) GetFile(path, application, profile, label string) ([]byte, error) {
-	// Parse the request path if application, profile, label are not provided
-	if application == "" {
-		application, profile, label, path = gb.parsePath(path)
-	}
-
-	// Ensure we're on the right branch/tag
-	if err := gb.checkoutLabel(label); err != nil {
-		return nil, err
-	}
-
-	// Search in configured paths
-	for _, searchPath := range gb.searchPaths {
-		fullPath := filepath.Join(gb.localRepo, searchPath, path)
-		if content, err := os.ReadFile(fullPath); err == nil {
-			return content, nil
-		}
-
-		// Try with application-profile.extension format
-		if application != "" && profile != "" {
-			ext := filepath.Ext(path)
-			if ext == "" {
-				ext = ".yml" // default extension
-			}
-			filename := fmt.Sprintf("%s-%s%s", application, profile, ext)
-			fullPath = filepath.Join(gb.localRepo, searchPath, filename)
-			if content, err := os.ReadFile(fullPath); err == nil {
-				return content, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("file not found: %s", path)
-}
-
-func (gb *GitBackend) ListFiles(path string) ([]string, error) {
-	application, profile, label, dirPath := gb.parsePath(path)
-
-	if err := gb.checkoutLabel(label); err != nil {
-		return nil, err
-	}
-
-	for _, searchPath := range gb.searchPaths {
-		fullPath := filepath.Join(gb.localRepo, searchPath, dirPath)
-		if files, err := os.ReadDir(fullPath); err == nil {
-			var fileNames []string
-			for _, file := range files {
-				fileNames = append(fileNames, file.Name())
-			}
-			return fileNames, nil
-		}
-	}
-
-	return nil, fmt.Errorf("directory not found: %s (app: %s, profile: %s, label: %s)", path, application, profile, label)
-}
-
-func LoadConfig(configFile string) (*Config, error) {
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %v", err)
-	}
-
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %v", err)
-	}
-
-	// Set defaults
-	if config.Server.Port == "" {
-		config.Server.Port = "8888"
-	}
-	if config.Server.Backend == "" {
-		config.Server.Backend = "filesystem"
-	}
-
-	return &config, nil
-}
-
-func NewConfigServer(config *Config) (*ConfigServer, error) {
-	cs := &ConfigServer{
-		config:      config,
-		users:       make(map[string]*User),
-		userRSAKeys: make(map[string]*UserRSAKeys),
-		cipherRegex: regexp.MustCompile(`'\{cipher\}([A-Za-z0-9+/=]+)'`),
-	}
-
-	// Index users by username and load RSA keys for asymmetric users
+// Initialize configuration
+func init() {
+	loadConfig()
+	users = make(map[string]*User)
 	for i := range config.Server.Users {
 		user := &config.Server.Users[i]
-		cs.users[user.Username] = user
-
-		// If no encryption_key, load RSA keys for asymmetric encryption
-		if user.EncryptionKey == "" {
-			if user.Key == "" || user.Cert == "" {
-				return nil, fmt.Errorf("user %s: key and cert paths required for asymmetric encryption", user.Username)
-			}
-
-			rsaKeys, err := cs.loadUserRSAKeys(user)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load RSA keys for user %s: %v", user.Username, err)
-			}
-			cs.userRSAKeys[user.Username] = rsaKeys
-		}
+		users[user.Username] = user
 	}
-
-	// Initialize backend
-	var err error
-	switch config.Server.Backend {
-	case "filesystem":
-		cs.backend = NewFilesystemBackend(config.Backend)
-	case "git":
-		cs.backend = NewGitBackend(config.Backend)
-		if cs.backend == nil {
-			return nil, fmt.Errorf("git backend configuration is missing")
-		}
-	default:
-		return nil, fmt.Errorf("unsupported backend: %s", config.Server.Backend)
-	}
-
-	if err = cs.backend.Initialize(); err != nil {
-		return nil, fmt.Errorf("failed to initialize backend: %v", err)
-	}
-
-	return cs, nil
 }
 
-// Load RSA keys for a user
-func (cs *ConfigServer) loadUserRSAKeys(user *User) (*UserRSAKeys, error) {
-	// Load private key
-	privKeyData, err := os.ReadFile(user.Key)
+func loadConfig() {
+	data, err := os.ReadFile("config.yaml")
 	if err != nil {
-		return nil, fmt.Errorf("failed to read private key: %v", err)
+		log.Fatal("Failed to read config.yaml:", err)
 	}
 
-	privKeyBlock, _ := pem.Decode(privKeyData)
-	if privKeyBlock == nil {
-		return nil, fmt.Errorf("failed to decode private key PEM")
-	}
-
-	privKey, err := x509.ParsePKCS1PrivateKey(privKeyBlock.Bytes)
+	err = yaml.Unmarshal(data, &config)
 	if err != nil {
-		// Try PKCS8 format
-		privKeyInterface, err := x509.ParsePKCS8PrivateKey(privKeyBlock.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse private key: %v", err)
-		}
-		var ok bool
-		privKey, ok = privKeyInterface.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("private key is not RSA")
-		}
+		log.Fatal("Failed to parse config.yaml:", err)
 	}
-
-	// Load public key/certificate
-	pubKeyData, err := os.ReadFile(user.Cert)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read public key/cert: %v", err)
-	}
-
-	pubKeyBlock, _ := pem.Decode(pubKeyData)
-	if pubKeyBlock == nil {
-		return nil, fmt.Errorf("failed to decode public key/cert PEM")
-	}
-
-	var pubKey *rsa.PublicKey
-	if pubKeyBlock.Type == "CERTIFICATE" {
-		// Parse as certificate
-		cert, err := x509.ParseCertificate(pubKeyBlock.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse certificate: %v", err)
-		}
-		var ok bool
-		pubKey, ok = cert.PublicKey.(*rsa.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("certificate public key is not RSA")
-		}
-	} else {
-		// Parse as public key
-		pubKeyInterface, err := x509.ParsePKIXPublicKey(pubKeyBlock.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse public key: %v", err)
-		}
-		var ok bool
-		pubKey, ok = pubKeyInterface.(*rsa.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("public key is not RSA")
-		}
-	}
-
-	return &UserRSAKeys{
-		PrivateKey: privKey,
-		PublicKey:  pubKey,
-	}, nil
 }
 
-// Get user from basic auth
-func (cs *ConfigServer) getUserFromAuth(r *http.Request) (*User, bool) {
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		return nil, false
-	}
-
-	user, exists := cs.users[username]
-	if !exists {
-		return nil, false
-	}
-
-	// Use constant time comparison to prevent timing attacks
-	if subtle.ConstantTimeCompare([]byte(password), []byte(user.Password)) != 1 {
-		return nil, false
-	}
-
-	return user, true
-}
-
-// Basic auth middleware
-func (cs *ConfigServer) basicAuth(next http.HandlerFunc) http.HandlerFunc {
+// Authentication middleware
+func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, ok := cs.getUserFromAuth(r)
+		username, password, ok := r.BasicAuth()
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Config Server"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Store user in request context for later use
-		r.Header.Set("X-Config-User", user.Username)
-		next.ServeHTTP(w, r)
+		user, exists := users[username]
+		if !exists || user.Password != password {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Config Server"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Add user to request context
+		r.Header.Set("X-User", username)
+		next(w, r)
 	}
 }
 
-// Encrypt data using user's key (symmetric or asymmetric based on user config)
-func (cs *ConfigServer) encrypt(plaintext string, user *User) (string, error) {
-	if user.EncryptionKey != "" {
-		// Symmetric encryption
-		return cs.encryptSymmetric(plaintext, user)
-	} else {
-		// Asymmetric encryption
-		return cs.encryptAsymmetric(plaintext, user)
-	}
+// Get user from request
+func getUserFromRequest(r *http.Request) *User {
+	username := r.Header.Get("X-User")
+	return users[username]
 }
 
-// Decrypt data using user's key (symmetric or asymmetric based on user config)
-func (cs *ConfigServer) decrypt(ciphertext string, user *User) (string, error) {
-	if user.EncryptionKey != "" {
-		// Symmetric decryption
-		return cs.decryptSymmetric(ciphertext, user)
-	} else {
-		// Asymmetric decryption
-		return cs.decryptAsymmetric(ciphertext, user)
+// Check if directory is allowed
+func isDirectoryAllowed(userDir string) bool {
+	for _, dirConfig := range config.BackendConfig.Filesystem.Directories {
+		if strings.HasPrefix(userDir, dirConfig.Directory) {
+			return true
+		}
 	}
+	return false
 }
 
-// Encrypt data using AES-256-GCM (symmetric)
-func (cs *ConfigServer) encryptSymmetric(plaintext string, user *User) (string, error) {
-	key, err := base64.StdEncoding.DecodeString(user.EncryptionKey)
-	if err != nil {
-		return "", fmt.Errorf("invalid base64 encryption key for user %s: %v", user.Username, err)
-	}
-	return u.Encrypt(plaintext, string(key))
+// Encryption/Decryption functions
+func encryptSymmetric(plaintext, key string) (string, error) {
+	return u.Encrypt(plaintext, key)
 }
 
-// Decrypt data using AES-256-GCM (symmetric)
-func (cs *ConfigServer) decryptSymmetric(ciphertext string, user *User) (string, error) {
-	key, err := base64.StdEncoding.DecodeString(user.EncryptionKey)
-	if err != nil {
-		return "", fmt.Errorf("invalid base64 encryption key for user %s: %v", user.Username, err)
-	}
-	return u.Decrypt(ciphertext, string(key))
+func decryptSymmetric(ciphertext, key string) (string, error) {
+	return u.Decrypt(ciphertext, key)
 }
 
-// Encrypt data using RSA-OAEP (asymmetric)
-func (cs *ConfigServer) encryptAsymmetric(plaintext string, user *User) (string, error) {
-	rsaKeys, exists := cs.userRSAKeys[user.Username]
-	if !exists {
-		return "", fmt.Errorf("RSA keys not loaded for user %s", user.Username)
-	}
-
-	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, rsaKeys.PublicKey, []byte(plaintext), nil)
+func encryptAsymmetric(plaintext string, certPath string) (string, error) {
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return "", err
 	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("failed to parse PEM block")
+	}
+
+	var pubKey *rsa.PublicKey
+	if block.Type == "CERTIFICATE" {
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return "", err
+		}
+		pubKey = cert.PublicKey.(*rsa.PublicKey)
+	} else {
+		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return "", err
+		}
+		pubKey = pub.(*rsa.PublicKey)
+	}
+
+	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, []byte(plaintext), nil)
+	if err != nil {
+		return "", err
+	}
+
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// Decrypt data using RSA-OAEP (asymmetric)
-func (cs *ConfigServer) decryptAsymmetric(ciphertext string, user *User) (string, error) {
-	rsaKeys, exists := cs.userRSAKeys[user.Username]
-	if !exists {
-		return "", fmt.Errorf("RSA keys not loaded for user %s", user.Username)
-	}
-
-	data, err := base64.StdEncoding.DecodeString(ciphertext)
+func decryptAsymmetric(ciphertext string, keyPath string) (string, error) {
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return "", err
 	}
 
-	plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, rsaKeys.PrivateKey, data, nil)
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return "", fmt.Errorf("failed to parse PEM block")
+	}
+
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+
+	ciphertextBytes, err := base64.StdEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return "", err
+	}
+
+	plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, ciphertextBytes, nil)
 	if err != nil {
 		return "", err
 	}
@@ -603,227 +218,343 @@ func (cs *ConfigServer) decryptAsymmetric(ciphertext string, user *User) (string
 	return string(plaintext), nil
 }
 
-// Process file content and decrypt '{cipher}xxx' patterns using first user's key (for file serving)
-func (cs *ConfigServer) processFileContent(content []byte) ([]byte, error) {
-	if len(cs.config.Server.Users) == 0 {
-		return content, nil
-	}
+// Process cipher patterns in content
+func processCipherPatterns(content string, user *User) string {
+	cipherPattern := regexp.MustCompile(`'\{cipher\}([^}']+)'`)
 
-	// Use first user's key for file content decryption
-	// In a real implementation, you might want to use a service key or determine user differently
-	firstUser := &cs.config.Server.Users[0]
+	return cipherPattern.ReplaceAllStringFunc(content, func(match string) string {
+		cipherData := strings.TrimPrefix(match, "'{cipher}")
+		cipherData = strings.TrimSuffix(cipherData, "'")
+		var decrypted string
+		var err error
 
-	contentStr := string(content)
+		if user.EncryptionKey != "" {
+			// Symmetric encryption
+			decrypted, err = decryptSymmetric(cipherData, user.EncryptionKey)
+		} else if user.Key != "" {
+			// Asymmetric encryption
+			decrypted, err = decryptAsymmetric(cipherData, user.Key)
+		}
 
-	// Find all '{cipher}xxx' patterns and decrypt them
-	result := cs.cipherRegex.ReplaceAllStringFunc(contentStr, func(match string) string {
-		// Extract the encrypted data (remove '{cipher}' prefix and quotes)
-		encryptedData := strings.TrimPrefix(strings.TrimSuffix(match, "'"), "'{cipher}")
-
-		// Decrypt the data
-		decrypted, err := cs.decrypt(encryptedData, firstUser)
 		if err != nil {
-			log.Printf("Failed to decrypt cipher data: %v", err)
-			return match // Return original if decryption fails
+			return "<n/a>"
 		}
 
 		return decrypted
 	})
-
-	return []byte(result), nil
 }
 
-// Handle encrypt endpoint
-func (cs *ConfigServer) handleEncrypt(w http.ResponseWriter, r *http.Request) {
+// Flatten YAML to flat key-value pairs
+func flattenYAML(data interface{}, prefix string, result map[string]interface{}) {
+	switch v := data.(type) {
+	case map[string]interface{}:
+		for key, value := range v {
+			newKey := key
+			if prefix != "" {
+				newKey = prefix + "." + key
+			}
+			flattenYAML(value, newKey, result)
+		}
+	case []interface{}:
+		for i, value := range v {
+			newKey := fmt.Sprintf("%s[%d]", prefix, i)
+			flattenYAML(value, newKey, result)
+		}
+	default:
+		result[prefix] = v
+	}
+}
+
+// Git operations
+func gitCheckout(repoPath, label string) error {
+	if label == "" {
+		label = config.BackendConfig.Git.DefaultLabel
+	}
+
+	cmd := exec.Command("git", "checkout", label)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+// Handler functions
+func encryptHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	user, ok := cs.getUserFromAuth(r)
-	if !ok {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Config Server"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
+	user := getUserFromRequest(r)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Unable to read request body", http.StatusBadRequest)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 
-	var plaintext string
-	contentType := r.Header.Get("Content-Type")
+	plaintext := string(body)
+	var encrypted string
 
-	// Check if it's JSON payload
-	if strings.Contains(contentType, "application/json") {
-		var req EncryptRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-		plaintext = req.Data
+	if user.EncryptionKey != "" {
+		encrypted, err = encryptSymmetric(plaintext, user.EncryptionKey)
+	} else if user.Cert != "" {
+		encrypted, err = encryptAsymmetric(plaintext, user.Cert)
 	} else {
-		// Treat as raw text
-		plaintext = string(body)
+		http.Error(w, "No encryption configuration found", http.StatusInternalServerError)
+		return
 	}
 
-	encrypted, err := cs.encrypt(plaintext, user)
 	if err != nil {
-		http.Error(w, "Encryption failed", http.StatusInternalServerError)
+		http.Error(w, "Encryption failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Return response based on request content type
-	if strings.Contains(contentType, "application/json") {
-		response := EncryptResponse{Data: encrypted}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	} else {
-		// Return raw encrypted text (Spring Boot Config Server style)
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(encrypted))
-	}
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprint(w, encrypted)
 }
 
-// Handle decrypt endpoint
-func (cs *ConfigServer) handleDecrypt(w http.ResponseWriter, r *http.Request) {
+func decryptHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	user, ok := cs.getUserFromAuth(r)
-	if !ok {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Config Server"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
+	user := getUserFromRequest(r)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "Unable to read request body", http.StatusBadRequest)
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 
-	var ciphertext string
-	contentType := r.Header.Get("Content-Type")
+	ciphertext := string(body)
+	var decrypted string
 
-	// Check if it's JSON payload
-	if strings.Contains(contentType, "application/json") {
-		var req DecryptRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+	if user.EncryptionKey != "" {
+		decrypted, err = decryptSymmetric(ciphertext, user.EncryptionKey)
+	} else if user.Key != "" {
+		decrypted, err = decryptAsymmetric(ciphertext, user.Key)
+	} else {
+		http.Error(w, "No decryption configuration found", http.StatusInternalServerError)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, "Decryption failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprint(w, decrypted)
+}
+
+func configHandler(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromRequest(r)
+	path := r.URL.Path
+
+	// Check if path is an absolute file path
+	if strings.HasPrefix(path, user.Directory) {
+		if !isDirectoryAllowed(user.Directory) {
+			http.Error(w, "Directory not allowed", http.StatusForbidden)
 			return
 		}
-		ciphertext = req.Data
-	} else {
-		// Treat as raw text
-		ciphertext = string(body)
-	}
 
-	decrypted, err := cs.decrypt(ciphertext, user)
-	if err != nil {
-		http.Error(w, "Decryption failed", http.StatusInternalServerError)
+		serveFile(w, r, path, user)
 		return
 	}
 
-	// Return response based on request content type
-	if strings.Contains(contentType, "application/json") {
-		response := DecryptResponse{Data: decrypted}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+	// Parse Spring Boot config server format: /{application}/{profile}/{label}/{path}
+	parts := strings.Split(path, "/")
+	println(u.JsonDump(parts, ""))
+	if len(parts) < 3 {
+		http.Error(w, "Invalid path format", http.StatusBadRequest)
+		return
+	}
+
+	application := parts[1]
+	profile := parts[2]
+	var label string
+	var filePath string
+
+	if len(parts) >= 4 {
+		label = parts[3]
+	}
+	if len(parts) >= 5 {
+		filePath = strings.Join(parts[4:], "/")
+	}
+
+	if filePath != "" {
+		// Serve specific file with format check
+		serveSpecificFile(w, r, user, application, profile, label, filePath)
 	} else {
-		// Return raw decrypted text (Spring Boot Config Server style)
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(decrypted))
+		// Return JSON response
+		serveConfigJSON(w, r, user, application, profile, label)
 	}
 }
 
-// Handle file serving using backend
-func (cs *ConfigServer) handleFileServing(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	requestPath := strings.TrimPrefix(r.URL.Path, "/")
-	if requestPath == "" {
-		http.Error(w, "Path required", http.StatusBadRequest)
-		return
-	}
-
-	// Try to get file content
-	content, err := cs.backend.GetFile(requestPath, "", "", "")
+func serveFile(w http.ResponseWriter, r *http.Request, filePath string, user *User) {
+	content, err := os.ReadFile(filePath)
 	if err != nil {
-		// Check if it's a directory request
-		files, listErr := cs.backend.ListFiles(requestPath)
-		if listErr != nil {
-			http.Error(w, "Not found", http.StatusNotFound)
-			return
-		}
-
-		// Return directory listing
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"path":  requestPath,
-			"files": files,
-		})
+		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
 
-	// Process file content (decrypt {cipher} patterns)
-	processedContent, err := cs.processFileContent(content)
-	if err != nil {
-		http.Error(w, "Unable to process file content", http.StatusInternalServerError)
-		return
-	}
+	processedContent := processCipherPatterns(string(content), user)
 
-	// Determine content type based on file extension
-	contentType := "text/plain"
-	ext := strings.ToLower(filepath.Ext(requestPath))
+	// Set appropriate content type
+	ext := filepath.Ext(filePath)
 	switch ext {
-	case ".json":
-		contentType = "application/json"
 	case ".yaml", ".yml":
-		contentType = "application/yaml"
-	case ".xml":
-		contentType = "application/xml"
+		w.Header().Set("Content-Type", "application/x-yaml")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json")
 	case ".properties":
-		contentType = "text/plain"
+		w.Header().Set("Content-Type", "text/plain")
+	default:
+		w.Header().Set("Content-Type", "text/plain")
 	}
 
-	w.Header().Set("Content-Type", contentType)
-	w.Write(processedContent)
+	fmt.Fprint(w, processedContent)
+}
+
+func serveSpecificFile(w http.ResponseWriter, r *http.Request, user *User, application, profile, label, filePath string) {
+	baseDir := user.Directory
+	if user.Backend == "git" {
+		baseDir = config.BackendConfig.Git.LocalRepo
+		if label != "" {
+			err := gitCheckout(baseDir, label)
+			if err != nil {
+				http.Error(w, "Failed to checkout git label", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// Check for file with format {application}-{profile}-{label}.extension
+	possibleFiles := []string{
+		fmt.Sprintf("%s-%s-%s.yaml", application, profile, label),
+		fmt.Sprintf("%s-%s-%s.yml", application, profile, label),
+		fmt.Sprintf("%s-%s-%s.properties", application, profile, label),
+		fmt.Sprintf("%s-%s-%s.json", application, profile, label),
+		filePath,
+	}
+
+	for _, fileName := range possibleFiles {
+		fullPath := filepath.Join(baseDir, fileName)
+		if _, err := os.Stat(fullPath); err == nil {
+			serveFile(w, r, fullPath, user)
+			return
+		}
+	}
+
+	http.Error(w, "Configuration file not found", http.StatusNotFound)
+}
+
+func serveConfigJSON(w http.ResponseWriter, r *http.Request, user *User, application, profile, label string) {
+	baseDir := user.Directory
+	if user.Backend == "git" {
+		baseDir = config.BackendConfig.Git.LocalRepo
+		if label != "" {
+			err := gitCheckout(baseDir, label)
+			if err != nil {
+				http.Error(w, "Failed to checkout git label", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	response := ConfigResponse{
+		Name:            application,
+		Profiles:        []string{profile},
+		PropertySources: []PropertySource{},
+	}
+
+	if label != "" {
+		response.Label = &label
+	}
+
+	// Look for specific profile file
+	possibleFiles := []string{
+		fmt.Sprintf("%s-%s.yaml", application, profile),
+		fmt.Sprintf("%s-%s.yml", application, profile),
+		fmt.Sprintf("%s-%s.properties", application, profile),
+		fmt.Sprintf("%s-%s.json", application, profile),
+	}
+	println(u.JsonDump(possibleFiles, ""))
+	for _, fileName := range possibleFiles {
+		fullPath := filepath.Join(baseDir, fileName)
+		if content, err := os.ReadFile(fullPath); err == nil {
+			processedContent := processCipherPatterns(string(content), user)
+			source := parseConfigFile(processedContent, filepath.Ext(fileName))
+
+			propertySource := PropertySource{
+				Name:   "file://" + fullPath,
+				Source: source,
+			}
+			response.PropertySources = append(response.PropertySources, propertySource)
+			break
+		}
+	}
+
+	// Look for application default file
+	defaultFiles := []string{
+		fmt.Sprintf("%s.yaml", application),
+		fmt.Sprintf("%s.yml", application),
+		fmt.Sprintf("%s.properties", application),
+		fmt.Sprintf("%s.json", application),
+	}
+
+	for _, fileName := range defaultFiles {
+		fullPath := filepath.Join(baseDir, fileName)
+		if content, err := os.ReadFile(fullPath); err == nil {
+			processedContent := processCipherPatterns(string(content), user)
+			source := parseConfigFile(processedContent, filepath.Ext(fileName))
+
+			propertySource := PropertySource{
+				Name:   "file://" + fullPath,
+				Source: source,
+			}
+			response.PropertySources = append(response.PropertySources, propertySource)
+			break
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func parseConfigFile(content, ext string) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	switch ext {
+	case ".yaml", ".yml":
+		var data interface{}
+		if err := yaml.Unmarshal([]byte(content), &data); err == nil {
+			flattenYAML(data, "", result)
+		}
+	case ".json":
+		var data interface{}
+		if err := json.Unmarshal([]byte(content), &data); err == nil {
+			flattenYAML(data, "", result)
+		}
+	case ".properties":
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 func main() {
-	configFile := os.Getenv("CONFIG_FILE")
-	if configFile == "" {
-		configFile = "config.yaml"
-	}
-
-	// Load configuration
-	config, err := LoadConfig(configFile)
-	if err != nil {
-		log.Fatal("Failed to load config:", err)
-	}
-
-	// Create config server
-	server, err := NewConfigServer(config)
-	if err != nil {
-		log.Fatal("Failed to create config server:", err)
-	}
-
-	// Setup routes
-	http.HandleFunc("/encrypt", server.basicAuth(server.handleEncrypt))
-	http.HandleFunc("/decrypt", server.basicAuth(server.handleDecrypt))
-	http.HandleFunc("/", server.handleFileServing)
+	http.HandleFunc("/encrypt", basicAuth(encryptHandler))
+	http.HandleFunc("/decrypt", basicAuth(decryptHandler))
+	http.HandleFunc("/", basicAuth(configHandler))
 
 	log.Printf("Config Server starting on port %s", config.Server.Port)
-	log.Printf("Backend: %s", config.Server.Backend)
-	log.Printf("Users configured: %d", len(config.Server.Users))
-
 	log.Fatal(http.ListenAndServe(":"+config.Server.Port, nil))
 }
