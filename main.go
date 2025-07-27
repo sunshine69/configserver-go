@@ -578,9 +578,9 @@ func parseConfigFile(content, ext string) map[string]interface{} {
 }
 
 func main() {
-	http.HandleFunc("/encrypt", basicAuth(encryptHandler))
-	http.HandleFunc("/decrypt", basicAuth(decryptHandler))
-	http.HandleFunc("/", basicAuth(configHandler))
+	http.HandleFunc("POST /encrypt", basicAuth(encryptHandler))
+	http.HandleFunc("POST /decrypt", basicAuth(decryptHandler))
+	http.HandleFunc("GET /", basicAuth(configHandler))
 
 	log.Printf("Config Server starting on port %s", config.Server.Port)
 	log.Fatal(http.ListenAndServe(":"+config.Server.Port, nil))
