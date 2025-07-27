@@ -218,13 +218,14 @@ func decryptAsymmetric(ciphertext string, keyPath string) (string, error) {
 	return string(plaintext), nil
 }
 
+var cipherPattern = regexp.MustCompile(`[']{0,1}\{cipher\}[^}']+[']{0,1}`)
+
 // Process cipher patterns in content
 func processCipherPatterns(content string, user *User) string {
-	cipherPattern := regexp.MustCompile(`'\{cipher\}([^}']+)'`)
-
 	return cipherPattern.ReplaceAllStringFunc(content, func(match string) string {
-		cipherData := strings.TrimPrefix(match, "'{cipher}")
-		cipherData = strings.TrimSuffix(cipherData, "'")
+		cipherData := strings.TrimPrefix(strings.TrimSuffix(match, "'"), "'")
+		cipherData = strings.TrimPrefix(cipherData, "{cipher}")
+
 		var decrypted string
 		var err error
 
@@ -348,22 +349,49 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 func configHandler(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromRequest(r)
 	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	parts_len := len(parts)
+	println(u.JsonDump(parts, ""))
 
 	// Check if path is an absolute file path
-	if strings.HasPrefix(path, user.Directory) {
+	if strings.Contains(path, user.Directory) {
 		if !isDirectoryAllowed(user.Directory) {
 			http.Error(w, "Directory not allowed", http.StatusForbidden)
 			return
 		}
-
+		supliedFileName := parts[parts_len-1]
+		remain_parts := parts[1 : parts_len-1]
+		remain_parts_len := len(remain_parts)
+		if remain_parts_len >= 2 {
+			application := remain_parts[0]
+			profile, label := remain_parts[1], ""
+			if remain_parts_len == 3 {
+				label = remain_parts[2]
+			}
+			expectedFileNameWithoutExt := application + "-" + profile + u.Ternary(label == "", "", "-"+label)
+			supliedFileNameWithouExt := strings.TrimSuffix(supliedFileName, filepath.Ext(supliedFileName))
+			if strings.Split(supliedFileNameWithouExt, "-")[0] != application {
+				http.Error(w, "Request file name for the app not found", http.StatusBadRequest)
+				return
+			}
+			for _, ext := range []string{".json", ".yaml", ".yml", ".properties"} {
+				configfile := expectedFileNameWithoutExt + ext
+				filePath := filepath.Join(user.Directory, configfile)
+				if u.Exists(filePath) {
+					serveFile(w, r, filePath, user)
+					return
+				}
+			}
+			suppliedFilePath := filepath.Join(user.Directory, supliedFileName)
+			serveFile(w, r, suppliedFilePath, user)
+			return
+		}
 		serveFile(w, r, path, user)
 		return
 	}
 
 	// Parse Spring Boot config server format: /{application}/{profile}/{label}/{path}
-	parts := strings.Split(path, "/")
-	println(u.JsonDump(parts, ""))
-	if len(parts) < 3 {
+	if parts_len < 3 {
 		http.Error(w, "Invalid path format", http.StatusBadRequest)
 		return
 	}
@@ -373,10 +401,10 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 	var label string
 	var filePath string
 
-	if len(parts) >= 4 {
+	if parts_len >= 4 {
 		label = parts[3]
 	}
-	if len(parts) >= 5 {
+	if parts_len >= 5 {
 		filePath = strings.Join(parts[4:], "/")
 	}
 
@@ -477,7 +505,6 @@ func serveConfigJSON(w http.ResponseWriter, r *http.Request, user *User, applica
 		fmt.Sprintf("%s-%s.properties", application, profile),
 		fmt.Sprintf("%s-%s.json", application, profile),
 	}
-	println(u.JsonDump(possibleFiles, ""))
 	for _, fileName := range possibleFiles {
 		fullPath := filepath.Join(baseDir, fileName)
 		if content, err := os.ReadFile(fullPath); err == nil {
