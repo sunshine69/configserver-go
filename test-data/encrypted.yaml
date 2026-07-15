@@ -1,0 +1,8 @@
+database:
+  host: localhost
+  port: 5432
+  name: mydb
+  password: "{cipher}ATN00kUH4yN3zlU+Lqn/VMY/0mqywy4PXRc8tZqLlZ/x8afnfIY4IHJxSp6fRUxwYyJuJgWn4v3j/yA3SKLc"
+app:
+  name: myapp
+  secret: "{cipher}Ab8PqBJRTbodjMjptV5ek+s2TKLyyNVN2/W61SXyaa2hAFnq41nJJVClsG93c"

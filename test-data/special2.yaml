@@ -1,0 +1,9 @@
+special: "hello world"
+numeric: 42
+bool: true
+str: "plain text"
+nested:
+  key1: val1
+  key2:
+    subkey: subval
+list_val: "one,two,three"

@@ -1,0 +1,10 @@
+works/**
+output*
+tmp/**
+work/**
+*-linux-*amd64
+*.exe
+*zstd
+.vscode/**
+.env* 
+aig_stream_debug.log

@@ -1,0 +1,4 @@
+special: "hello world & good<bye>"
+numeric: 42
+bool: true
+null: null

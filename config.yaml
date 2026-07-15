@@ -1,37 +1,36 @@
 server:
-  port: "8888"
-  backend: "filesystem"  # "filesystem" or "git"
+  port: 7777
+  ssl:
+    enable: false
+    key: /path/to/private/keyfile
+    cert: /path/to/certfile
   users:
-    # Symmetric encryption user
-    - username: "admin"
-      password: "admin123"
-      # encryption_key: "bXlzZWNyZXRrZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="  # base64 random bytes
-      encryption_key: 'mgZSpvHRFID43Xf7YwT9NAqYEZc1bgh6P4+U0IOtaueJnkUb0ucRg5Ur8rvzYN46'
+    # Example 1: Filesystem backend (existing)
+    - username: user1
+      password: changeme
+      encryption_key: mySecretKey123
+      directory: /data/config/user1
+      backend: filesystem
 
-    # Asymmetric encryption user (no encryption_key means use RSA)
-    # - username: "secure"
-    #   password: "secure123"
-    #   key: "/path/to/private.pem"   # RSA private key
-    #   cert: "/path/to/public.pem"   # RSA public key or certificate
+    # Example 2: PostgreSQL backend (NEW)
+    - username: user2
+      password: changeme
+      encryption_key: mySecretKey456
+      backend: postgres
+      # Optional: per-user postgres settings (overrides global)
+      # postgres:
+      #   connection_string: "postgres://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT:-5432}/${DATABASE_NAME}?sslmode=disable"
+      #   table_name: custom_table_name
 
-    # Another symmetric user with different key
-    # - username: "dev"
-    #   password: "dev123"
-    #   encryption_key: "ZGV2c2VjcmV0a2V5MTIzNDU2Nzg5MDEyMzQ1Njc4OTA="   # different key for dev
-
-# Backend configuration organized by backend type
 backend_config:
-  # Filesystem backend configuration
   filesystem:
     directories:
-      - directory: "/mnt/portdata/tmp/configfiles"
+      - /data/config/user1
 
-  # Git backend configuration
   git:
-    uri: "https://github.com/myorg/config-repo.git"
-    search_paths: "/,/configs,/application-configs"  # comma-separated
-    username: "git-user"           # optional for private repos
-    password: "git-token"          # optional for private repos
-    default_label: "main"          # default branch/tag
-    clone_on_start: true
-    local_repo: "./git-repo"       # local clone directory
+    url: http://etc.com
+
+  # Global postgres config
+  # Uses PG* env vars set by docker-compose
+  postgres:
+    default_connection_string: "postgres://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT:-5432}/${DATABASE_NAME}?sslmode=disable"

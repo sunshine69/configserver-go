@@ -1,0 +1,314 @@
+definitions:
+  backend.Info:
+    properties:
+      app:
+        type: string
+      ext:
+        type: string
+      label:
+        type: string
+      modified:
+        type: string
+      profile:
+        type: string
+    type: object
+  main.ErrorResponse:
+    properties:
+      description:
+        type: string
+      status:
+        type: string
+    type: object
+  main.GetValuesResponse:
+    properties:
+      label:
+        type: string
+      name:
+        type: string
+      profiles:
+        items:
+          type: string
+        type: array
+      propertySources:
+        items:
+          $ref: '#/definitions/main.PropertySource'
+        type: array
+      state:
+        type: string
+      version:
+        type: string
+    type: object
+  main.PropertySource:
+    properties:
+      name:
+        type: string
+      source:
+        additionalProperties: true
+        type: object
+    type: object
+info:
+  contact: {}
+paths:
+  /{app}/{profile}:
+    get:
+      consumes:
+      - application/json
+      description: Fetch configuration for a Spring Cloud Config application.
+      parameters:
+      - description: Application name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Profile name (e.g., dev, prod, staging)
+        in: path
+        name: profile
+        required: true
+        type: string
+      - description: Git label/branch (optional)
+        in: path
+        name: label
+        type: string
+      - description: File extension (.yaml, .json, .properties)
+        in: path
+        name: ext
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "404":
+          description: Config not found or file not found
+          schema:
+            type: string
+        "502":
+          description: Backend error
+          schema:
+            type: string
+      security:
+      - BasicAuth: []
+      summary: Retrieve application configuration
+      tags:
+      - Config
+  /decrypt:
+    post:
+      consumes:
+      - text/plain
+      description: Decrypts the provided ciphertext using the authenticated user's
+        encryption key.
+      parameters:
+      - description: Ciphertext to decrypt
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Decrypted plaintext
+          schema:
+            type: string
+        "400":
+          description: Bad request - invalid body or decryption failed
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      security:
+      - BasicAuth: []
+      summary: Decrypt a value
+      tags:
+      - Encryption
+  /delete:
+    delete:
+      description: Delete a configuration file for a specific app, profile, and optional
+        label.
+      parameters:
+      - description: Application name
+        in: query
+        maxLength: 64
+        minLength: 1
+        name: app
+        required: true
+        type: string
+      - description: Profile name (e.g., dev, prod)
+        in: query
+        maxLength: 64
+        minLength: 1
+        name: profile
+        required: true
+        type: string
+      - description: Git label/branch
+        in: query
+        maxLength: 64
+        minLength: 1
+        name: label
+        type: string
+      - default: .yaml
+        description: File extension
+        in: query
+        name: ext
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: File deleted successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad request - missing params or invalid input
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "404":
+          description: File not found
+          schema:
+            type: string
+      security:
+      - BasicAuth: []
+      summary: Delete a configuration file
+      tags:
+      - Config
+  /encrypt:
+    post:
+      consumes:
+      - text/plain
+      description: Encrypts the provided plaintext using the authenticated user's
+        encryption key.
+      parameters:
+      - description: Plaintext to encrypt
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Encrypted ciphertext
+          schema:
+            type: string
+        "400":
+          description: Bad request - invalid body or encryption failed
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      security:
+      - BasicAuth: []
+      summary: Encrypt a value
+      tags:
+      - Encryption
+  /list:
+    get:
+      description: Returns a list of all configuration files stored for the authenticated
+        user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of configuration files
+          schema:
+            items:
+              $ref: '#/definitions/backend.Info'
+            type: array
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "502":
+          description: Backend error
+          schema:
+            type: string
+      security:
+      - BasicAuth: []
+      summary: List all configuration files
+      tags:
+      - Config
+  /upload:
+    post:
+      consumes:
+      - text/plain
+      description: Upload a configuration file for a specific app, profile, and optional
+        label.
+      parameters:
+      - description: Application name
+        in: query
+        maxLength: 64
+        minLength: 1
+        name: app
+        required: true
+        type: string
+      - description: Profile name (e.g., dev, prod)
+        in: query
+        maxLength: 64
+        minLength: 1
+        name: profile
+        required: true
+        type: string
+      - description: Git label/branch
+        in: query
+        maxLength: 64
+        minLength: 1
+        name: label
+        type: string
+      - default: .yaml
+        description: File extension (.yaml, .json, .properties)
+        in: query
+        name: ext
+        type: string
+      - description: Raw configuration file content
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: File uploaded successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad request - missing params or invalid input
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "403":
+          description: Forbidden - unsupported file extension
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "500":
+          description: Internal server error - failed to store file
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      security:
+      - BasicAuth: []
+      summary: Upload configuration file
+      tags:
+      - Config
+swagger: "2.0"
