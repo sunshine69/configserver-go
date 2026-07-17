@@ -6,11 +6,9 @@ exclude: ""
 fptn: .*
 group-index-a: []
 group-index-b: []
-path-exclude:
-    - .*/node_modules/.*
+path-exclude: ""
 profile: ""
 regexp: []
 save-config: cred-detect-config.yaml
 skipbinary: true
-words-file: ""
 words-list-url: https://github.com/dwyl/english-words/blob/master/words.txt

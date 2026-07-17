@@ -244,7 +244,7 @@ echo ""
 echo "=========================================="
 echo "=== TEST 25: Fetch raw file via path ==="
 echo "=========================================="
-curl -s $AUTH "$BASE_URL/configs/myapp/prod.yaml" | jq .
+curl -s $AUTH "$BASE_URL/configs/myapp/prod.yaml"
 echo ""
 echo ""
 
@@ -260,7 +260,7 @@ echo ""
 echo "=========================================="
 echo "=== TEST 27: Fetch nested raw file via path ==="
 echo "=========================================="
-curl -s $AUTH "$BASE_URL/depth/level1/level2/nested.json" | jq .
+curl -s $AUTH "$BASE_URL/depth/level1/level2/nested.json"
 echo ""
 echo ""
 
