@@ -95,6 +95,53 @@ func (b *FileSystemBackend) PutFile(app, profile, label, ext string, content []b
 	return nil
 }
 
+// PutFileWithFullPath writes content to disk at the given relative path.
+// The path is resolved relative to the backend's BaseDir, and is validated
+// to prevent directory traversal.
+//
+// If fullPath is empty, the behavior is identical to PutFile.
+func (b *FileSystemBackend) PutFileWithFullPath(app, profile, label, ext, fullPath string, content []byte) error {
+	if !supportedExtension(ext) {
+		return fmt.Errorf("unsupported extension %q", ext)
+	}
+
+	var destPath string
+	if fullPath != "" {
+		destPath = filepath.Join(b.BaseDir, fullPath)
+	} else {
+		// Fall back to standard naming convention
+		filenameWithoutExt := fmt.Sprintf("%s-%s", app, profile)
+		if label != "" {
+			filenameWithoutExt = filenameWithoutExt + "-" + label
+		}
+		destPath = filepath.Join(b.BaseDir, filenameWithoutExt+ext)
+	}
+
+	// Resolve to absolute to check for directory traversal.
+	abs, err := filepath.Abs(destPath)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	baseAbs, err := filepath.Abs(b.BaseDir)
+	if err != nil {
+		return fmt.Errorf("resolve base dir: %w", err)
+	}
+	if !strings.HasPrefix(abs, baseAbs+string(filepath.Separator)) && abs != baseAbs {
+		return fmt.Errorf("path escapes base directory: %s", destPath)
+	}
+
+	// Ensure the directory exists.
+	if dir := filepath.Dir(abs); dir != b.BaseDir {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create directory: %w", err)
+		}
+	}
+	if err := os.WriteFile(abs, content, 0o644); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+	return nil
+}
+
 func supportedExtension(ext string) bool {
 	for _, e := range []string{".json", ".yaml", ".yml", ".properties"} {
 		if ext == e {

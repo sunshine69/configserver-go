@@ -8,3 +8,4 @@ work/**
 .vscode/**
 .env* 
 aig_stream_debug.log
+.playwright-mcp/**

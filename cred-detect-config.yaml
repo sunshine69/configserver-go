@@ -6,7 +6,8 @@ exclude: ""
 fptn: .*
 group-index-a: []
 group-index-b: []
-path-exclude: ""
+path-exclude:
+    - .*/node_modules/.*
 profile: ""
 regexp: []
 save-config: cred-detect-config.yaml

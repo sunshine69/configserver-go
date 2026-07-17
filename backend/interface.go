@@ -49,6 +49,12 @@ type Backend interface {
 	// invalid.
 	PutFile(app, profile, label, ext string, content []byte) error
 
+	// PutFileWithFullPath stores content and records a relative path for
+	// retrieval via GetFileByPath. The path is stored in the backend and
+	// used when CONFIGSERVER_FILEPATH is enabled.
+	// If fullPath is empty, the behavior is identical to PutFile.
+	PutFileWithFullPath(app, profile, label, ext, fullPath string, content []byte) error
+
 	// DeleteFile removes the config file at the given address.
 	// Returns ErrNotExist if the file was not found.
 	DeleteFile(app, profile, label, ext string) error

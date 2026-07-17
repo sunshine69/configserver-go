@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS config_server_files (
     label       VARCHAR(256) NOT NULL DEFAULT '',
     ext         VARCHAR(16) NOT NULL,
     content     TEXT NOT NULL,
+    path        TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (username, app, profile, label, ext)
@@ -41,8 +42,8 @@ CREATE INDEX IF NOT EXISTS idx_config_server_files_lookup
 // It is safe for concurrent use. Connections are pooled per DSN and lazily
 // created on first use.
 type PostgresBackend struct {
-	mu      sync.RWMutex
-	pools   map[string]*pgxpool.Pool // keyed by DSN
+	mu        sync.RWMutex
+	pools     map[string]*pgxpool.Pool // keyed by DSN
 	globalDSN string
 }
 
@@ -129,14 +130,14 @@ func ExpandEnvVars(s string) string {
 				b.WriteByte('$')
 				continue
 			}
-			
+
 			// Extract the full expression: VAR, VAR:-default, or VAR:+other
 			fullExpr := s[i+2 : i+2+j]
-			
+
 			var varName string
 			var hasDefault, hasAlternative bool
 			var defaultValue, alternativeValue string
-			
+
 			// Check for :- (default value)
 			if idx := strings.Index(fullExpr, ":-"); idx >= 0 {
 				varName = fullExpr[:idx]
@@ -149,7 +150,7 @@ func ExpandEnvVars(s string) string {
 			} else {
 				varName = fullExpr
 			}
-			
+
 			if val, ok := os.LookupEnv(varName); ok {
 				if hasAlternative {
 					// VAR is set, use alternative value
@@ -257,51 +258,115 @@ func (b *postgresUserBackend) GetFile(app, profile, label string, ext string) ([
 	return content, nil
 }
 
+// GetFileByPath returns the file content stored under the given relative path.
+// The path is stored in the 'path' column and was populated by PutFileWithFullPath.
 func (b *postgresUserBackend) GetFileByPath(fullPath string) ([]byte, error) {
-	// fullPath can be either:
-	//   1. A raw filename like "myapp-prod-staging.yaml"
-	//   2. An absolute-ish path whose last segment is the filename
-	// We extract the filename component and parse it into (app, profile, label, ext).
-	filename := extractFilename(fullPath)
-	return b.GetFileByFilename(filename)
-}
+	// Clean the path: remove leading/trailing slashes, reject traversal.
+	cleanPath := strings.Trim(fullPath, "/")
+	if !IsValidRelativePath(cleanPath) {
+		return nil, fmt.Errorf("invalid path: %s", fullPath)
+	}
 
-// GetFileByFilename parses a filename like "myapp-prod-staging.yaml" or
-// "myapp-prod.json" and queries the DB.
-func (b *postgresUserBackend) GetFileByFilename(filename string) ([]byte, error) {
-	ext := filepathExt(filename)
-	base := strings.TrimSuffix(filename, ext)
-	// base is now "myapp-prod-staging" or "myapp-prod"
-	app, profile, label := parseAppProfileLabel(base)
-
-	return b.GetFile(app, profile, label, ext)
+	q := fmt.Sprintf(
+		"SELECT content FROM %s WHERE username=$1 AND path=$2",
+		b.table,
+	)
+	var content []byte
+	err := b.db.QueryRow(context.Background(), q, b.username, cleanPath).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotExist
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres GetFileByPath: %w", err)
+	}
+	return content, nil
 }
 
 // PutFile upserts content into the per-user table.
 //
 // The unique constraint (username, app, profile, label, ext) means this is
 // an atomic upsert — if the row already exists, content and updated_at are
-// refreshed.
+// refreshed. The path column is set to the standard filename derived from
+// the app/profile/label/ext parameters.
 func (b *postgresUserBackend) PutFile(app, profile, label, ext string, content []byte) error {
 	if !supportedExtension(ext) {
 		return fmt.Errorf("unsupported extension %q", ext)
 	}
-	// Validate params to prevent SQL injection (table name is parameterised
-	// via fmt.Sprintf above, but app/profile/label go into placeholders).
-	// Empty labels are allowed.
+	// Validate params to prevent SQL injection.
 	if !validConfigSegment(app) || !validConfigSegment(profile) || (label != "" && !validConfigSegment(label)) {
 		return fmt.Errorf("invalid app/profile/label segment")
 	}
 
+	// Derive a standard filename for the path column so GetFileByPath can
+	// locate files uploaded via the standard endpoint.
+	filename := fmt.Sprintf("%s%s", app, profile)
+	if label != "" {
+		filename = filename + "-" + label
+	}
+	filename = filename + ext
+	path := fmt.Sprintf("%s/%s", app, filename)
+
 	q := fmt.Sprintf(
-		"INSERT INTO %s (username, app, profile, label, ext, content, updated_at) VALUES ($1, $2, $3, $4, $5, $6, now()) ON CONFLICT (username, app, profile, label, ext) DO UPDATE SET content = EXCLUDED.content, updated_at = now()",
+		"INSERT INTO %s (username, app, profile, label, ext, content, path, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) ON CONFLICT (username, app, profile, label, ext) DO UPDATE SET content = EXCLUDED.content, path = EXCLUDED.path, updated_at = now()",
 		b.table,
 	)
 	_, err := b.db.Exec(context.Background(), q,
-		b.username, app, profile, label, ext, string(content),
+		b.username, app, profile, label, ext, string(content), path,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres PutFile: %w", err)
+	}
+	return nil
+}
+
+// PutFileWithFullPath upserts content into the DB and records the relative
+// path so it can be served via GetFileByPath.
+//
+// fullPath is the path stored in the 'path' column, e.g.
+// "opt/sonic/configuration/myapp/dev-staging.yaml".
+func (b *postgresUserBackend) PutFileWithFullPath(app, profile, label, ext, fullPath string, content []byte) error {
+	if !supportedExtension(ext) {
+		return fmt.Errorf("unsupported extension %q", ext)
+	}
+	if !validConfigSegment(app) || !validConfigSegment(profile) || (label != "" && !validConfigSegment(label)) {
+		return fmt.Errorf("invalid app/profile/label segment")
+	}
+	if !IsValidRelativePath(fullPath) {
+		return fmt.Errorf("invalid fullPath: %s", fullPath)
+	}
+
+	// Derive the lookup key for the unique constraint from the filename.
+	filename := extractFilename(fullPath)
+	extFromName := filepathExt(filename)
+	baseName := strings.TrimSuffix(filename, extFromName)
+	parsedApp, parsedProfile, parsedLabel := parseAppProfileLabel(baseName)
+
+	// Use explicit params if provided, otherwise parse from filename.
+	lookupApp := app
+	lookupProfile := profile
+	lookupLabel := label
+	if lookupApp == "" {
+		lookupApp = parsedApp
+	}
+	if lookupProfile == "" {
+		lookupProfile = parsedProfile
+	}
+	if lookupLabel == "" {
+		lookupLabel = parsedLabel
+	}
+	if lookupApp == "" || lookupProfile == "" {
+		return fmt.Errorf("could not determine app/profile from path: %s", fullPath)
+	}
+
+	q := fmt.Sprintf(
+		"INSERT INTO %s (username, app, profile, label, ext, content, path, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) ON CONFLICT (username, app, profile, label, ext) DO UPDATE SET content = EXCLUDED.content, path = EXCLUDED.path, updated_at = now()",
+		b.table,
+	)
+	_, err := b.db.Exec(context.Background(), q,
+		b.username, lookupApp, lookupProfile, lookupLabel, extFromName, string(content), fullPath,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres PutFileWithFullPath: %w", err)
 	}
 	return nil
 }
@@ -382,10 +447,11 @@ func filepathExt(name string) string {
 // information from the URL structure.
 func parseAppProfileLabel(base string) (app, profile, label string) {
 	parts := strings.Split(base, "-")
-	if len(parts) < 2 {
+	if len(parts) < 3 {
+		// 1-2 segments: treat entire string as app, no profile/label
 		return base, "", ""
 	}
-	// 2+ segments: last segment is profile, everything else is app
+	// 3+ segments: last segment is profile, everything before is app
 	return strings.Join(parts[:len(parts)-1], "-"), parts[len(parts)-1], ""
 }
 
@@ -401,6 +467,26 @@ func validConfigSegment(s string) bool {
 			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
 			return false
 		}
+	}
+	return true
+}
+
+// IsValidRelativePath checks that relPath contains only safe characters and
+// no path traversal sequences. It allows alphanumeric characters, hyphens,
+// underscores, dots, forward slashes, and colons (for Windows drive letters).
+func IsValidRelativePath(relPath string) bool {
+	if relPath == "" || len(relPath) > 4096 {
+		return false
+	}
+	for _, c := range relPath {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '/' || c == ':') {
+			return false
+		}
+	}
+	// Reject .. traversal components.
+	if strings.Contains(relPath, "..") {
+		return false
 	}
 	return true
 }

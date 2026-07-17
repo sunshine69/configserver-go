@@ -1,8 +1,11 @@
 #!/bin/bash
 # Comprehensive test suite for config-server-go
 
-BASE_URL="http://localhost:7777"
-AUTH="-u user2:changeme"
+BASE_URL="${BASE_URL:-http://localhost:7777}"
+AUTH="-u ${CONFIG_USER:-user2}:${CONFIG_PASSWORD:-changeme}"
+
+echo "AUTH: '$AUTH' $BASE_URL"
+read junk
 
 echo "=========================================="
 echo "=== TEST SUITE: config-server-go ==="
@@ -225,6 +228,46 @@ echo "=========================================="
 echo "=== TEST 23: Swagger UI ==="
 echo "=========================================="
 curl -s -o /dev/null -w "HTTP Status: %{http_code}" "$BASE_URL/swagger/index.html"
+echo ""
+echo ""
+
+# TEST 24: Upload with path parameter (raw file at custom path)
+echo "=========================================="
+echo "=== TEST 24: Upload with path parameter ==="
+echo "=========================================="
+curl -s $AUTH -X POST "$BASE_URL/upload?app=myapp&profile=prod&ext=.yaml&path=configs/myapp/prod.yaml" -H "Content-Type: text/plain" -d "path_config: enabled
+custom_path: true"
+echo ""
+echo ""
+
+# TEST 25: Fetch uploaded file via path (raw content)
+echo "=========================================="
+echo "=== TEST 25: Fetch raw file via path ==="
+echo "=========================================="
+curl -s $AUTH "$BASE_URL/configs/myapp/prod.yaml" | jq .
+echo ""
+echo ""
+
+# TEST 26: Upload with nested path
+echo "=========================================="
+echo "=== TEST 26: Upload with nested path ==="
+echo "=========================================="
+curl -s $AUTH -X POST "$BASE_URL/upload?app=nestedapp&profile=dev&ext=.json&path=depth/level1/level2/nested.json" -H "Content-Type: text/plain" -d '{"nested": true}'
+echo ""
+echo ""
+
+# TEST 27: Fetch nested file via path
+echo "=========================================="
+echo "=== TEST 27: Fetch nested raw file via path ==="
+echo "=========================================="
+curl -s $AUTH "$BASE_URL/depth/level1/level2/nested.json" | jq .
+echo ""
+echo ""
+
+# Clean up path-based files
+echo "--- CLEANUP (path files) ---"
+curl -s $AUTH -X DELETE "$BASE_URL/delete?app=myapp&profile=prod&ext=.yaml"
+curl -s $AUTH -X DELETE "$BASE_URL/delete?app=nestedapp&profile=dev&ext=.json"
 echo ""
 echo ""
 

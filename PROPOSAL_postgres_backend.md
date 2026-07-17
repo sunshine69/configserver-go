@@ -123,7 +123,7 @@ CREATE INDEX idx_config_files_lookup
 #### Why store raw content (not flattened)?
 
 - **Format fidelity**: YAML, JSON, and properties all have subtle parsing semantics; storing raw avoids losing anything
-- **Reuse existing logic**: The current `parseConfigData()` and `FlatternDataToMap()` functions work on `[]byte` — they can read from DB the same way they read from disk
+- **Reuse existing logic**: The current `lib.ParseConfigData()` and `FlatternDataToMap()` functions work on `[]byte` — they can read from DB the same way they read from disk
 - **Encryption transparency**: `{cipher}` patterns live in the raw text; decryption happens at read time, not storage time
 - **Single source of truth**: No need to maintain parallel raw + flattened stores
 
@@ -280,7 +280,7 @@ func serveValues(w http.ResponseWriter, user *UserConfig, be Backend, app, profi
             continue
         }
         data = processCipherPatterns(string(data), user)
-        result := parseConfigData(data, ext)
+        result := lib.ParseConfigData(data, ext)
         responseObj.PropertySources = append(responseObj.PropertySources, PropertySource{
             Name:   fmt.Sprintf("postgres:config_files where app=%s profile=%s", app, profile),
             Source: result,
