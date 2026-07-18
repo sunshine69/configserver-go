@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 var SupportedConfigFileType = []string{".properties", ".yml", ".yaml", ".json"}

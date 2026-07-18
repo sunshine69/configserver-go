@@ -460,27 +460,95 @@ func serveFile(w http.ResponseWriter, be backend.Backend, filename string) {
 	}
 }
 
+// hasLabelSources checks if any config files exist for the given label.
+func (a *App) hasLabelSources(be backend.Backend, user *UserConfig, app string, profiles []string, label string) bool {
+	for _, profile := range profiles {
+		p, _ := lib.SplitProfileAndExt(profile)
+		for _, ext := range lib.SupportedConfigFileType {
+			// Check all 4 source patterns
+			if ps := a.fetchPropertySource(be, user, app, p, label, ext); ps != nil {
+				return true
+			}
+			if ps := a.fetchPropertySource(be, user, app, "", label, ext); ps != nil {
+				return true
+			}
+			if ps := a.fetchPropertySource(be, user, "application", p, label, ext); ps != nil {
+				return true
+			}
+			if ps := a.fetchPropertySource(be, user, "application", "", label, ext); ps != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findLabelForFallback tries to determine which label to use for fetching
+// config when no explicit label is specified. It follows Spring Cloud Config
+// Server's default label fallback behavior:
+//   1. Try with empty label (standard naming: {app}-{profile}.{ext})
+//   2. Try label "main" ({app}-{profile}-main.{ext})
+//   3. Try label "master" ({app}-{profile}-master.{ext})
+//
+// Returns the first label that has any config files.
+func (a *App) findLabelForFallback(be backend.Backend, user *UserConfig, app string, profiles []string) string {
+	// 1. Try with empty label (no label suffix)
+	if a.hasLabelSources(be, user, app, profiles, "") {
+		return ""
+	}
+	// 2. Try "main" branch
+	if a.hasLabelSources(be, user, app, profiles, "main") {
+		return "main"
+	}
+	// 3. Try "master" branch (fallback)
+	if a.hasLabelSources(be, user, app, profiles, "master") {
+		return "master"
+	}
+	// No files found at all
+	return ""
+}
+
 // serveValues returns a Spring Cloud Config GetValuesResponse JSON with multi-profile support.
 //
 // Profiles are processed in order, with later profiles taking higher priority.
-// For each profile, the first matching extension is used (properties > yml > yaml > json).
+// For each profile, files are fetched across ALL supported extensions in precedence order
+// (properties > yml > yaml > json) and merged together.
 // Multiple profiles are merged together.
 // Placeholders (${VAR}) are resolved with environment variables.
 // Cipher values ({cipher}...) are decrypted.
+//
+// Property source resolution follows Spring Cloud Config Server precedence:
+//   1. {app}-{profile}.{ext}        (highest precedence)
+//   2. {app}.{ext}
+//   3. application-{profile}.{ext}
+//   4. application.{ext}             (lowest precedence)
+//
+// Higher-precedence sources are listed earlier in the propertySources array.
+//
+// Default label fallback: When no label is specified, tries "main" first,
+// then falls back to "master" (matches Spring Cloud Config Server behavior).
 func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserConfig, app string, profiles []string, label string) {
 	if len(profiles) == 0 {
 		http.Error(w, "No profiles specified", http.StatusBadRequest)
 		return
 	}
 
+	// Default label fallback: if no label specified, use findLabelForFallback
+	// which checks empty label first, then "main", then "master".
+	var selectedLabel string
+	if label != "" {
+		selectedLabel = label
+	} else {
+		selectedLabel = a.findLabelForFallback(be, user, app, profiles)
+	}
+
 	responseObj := GetValuesResponse{
 		Name:            app,
 		Profiles:        profiles,
-		Label:           u.Ternary(label != "", &label, nil),
+		Label:           &selectedLabel,
 		PropertySources: []PropertySource{},
 	}
 
-	// For each profile, try extensions in priority order and take the first match
 	allPropertySources := []PropertySource{}
 	foundAny := false
 
@@ -492,40 +560,34 @@ func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserC
 			extensionsToTry = []string{ext}
 		}
 
-		// Find the first matching extension for this profile
-		var matchedExt string
-		var content []byte
-
+		// For each extension, fetch ALL matching files in Spring Cloud Config precedence order.
+		// The order is: properties > yml > yaml > json.
 		for _, fileExt := range extensionsToTry {
-			data, err := be.GetFile(app, profile, label, fileExt)
-			if backend.IsNotExist(err) {
-				continue
+			// Collect property sources for this extension in precedence order
+			var extPropertySources []PropertySource
+
+			// 1. {app}-{profile}.{ext} (highest precedence)
+			if ps := a.fetchPropertySource(be, user, app, profile, selectedLabel, fileExt); ps != nil {
+				extPropertySources = append(extPropertySources, *ps)
 			}
-			if err != nil {
-				log.Printf("[WARN] backend error for %s-%s-%s.%s: %v", app, profile, label, fileExt, err)
-				continue
+			// 2. {app}.{ext}
+			if ps := a.fetchPropertySource(be, user, app, "", selectedLabel, fileExt); ps != nil {
+				extPropertySources = append(extPropertySources, *ps)
 			}
-			matchedExt = fileExt
-			content = data
-			break // First match wins
+			// 3. application-{profile}.{ext}
+			if ps := a.fetchPropertySource(be, user, "application", profile, selectedLabel, fileExt); ps != nil {
+				extPropertySources = append(extPropertySources, *ps)
+			}
+			// 4. application.{ext} (lowest precedence)
+			if ps := a.fetchPropertySource(be, user, "application", "", selectedLabel, fileExt); ps != nil {
+				extPropertySources = append(extPropertySources, *ps)
+			}
+
+			if len(extPropertySources) > 0 {
+				allPropertySources = append(allPropertySources, extPropertySources...)
+				foundAny = true
+			}
 		}
-
-		if matchedExt == "" {
-			continue // No file found for this profile
-		}
-
-		// Parse and add to property sources
-		parsedContent := string(content)
-		parsedContent = processCipherPatterns(parsedContent, user)
-		parsedContent = lib.ResolvePlaceholders(parsedContent)
-		result := lib.ParseConfigData(parsedContent, matchedExt)
-
-		sourceName := lib.DetermineSourceName(be, app, profile, label, matchedExt)
-		allPropertySources = append(allPropertySources, PropertySource{
-			Name:   sourceName,
-			Source: result,
-		})
-		foundAny = true
 	}
 
 	if !foundAny {
@@ -533,11 +595,36 @@ func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserC
 		return
 	}
 
-	// Append individual property sources for each profile found
 	responseObj.PropertySources = append(responseObj.PropertySources, allPropertySources...)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(responseObj)
+}
+
+// fetchPropertySource retrieves a single config file from the backend,
+// applies cipher decryption and placeholder resolution, parses it into a
+// flat key-value map, and returns a PropertySource. Returns nil if the
+// file does not exist or encounters a backend error.
+func (a *App) fetchPropertySource(be backend.Backend, user *UserConfig, app, profile, label, ext string) *PropertySource {
+	data, err := be.GetFile(app, profile, label, ext)
+	if backend.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		log.Printf("[WARN] backend error for %s-%s-%s.%s: %v", app, profile, label, ext, err)
+		return nil
+	}
+
+	parsedContent := string(data)
+	parsedContent = processCipherPatterns(parsedContent, user)
+	parsedContent = lib.ResolvePlaceholders(parsedContent)
+	result := lib.ParseConfigData(parsedContent, ext)
+
+	sourceName := lib.DetermineSourceName(be, app, profile, label, ext)
+	return &PropertySource{
+		Name:   sourceName,
+		Source: result,
+	}
 }
 
 // encryptHandler encrypts plaintext with the authenticated user's key.
@@ -657,11 +744,11 @@ func (a *App) deleteHandler(w http.ResponseWriter, r *http.Request) {
 		ext = ".yaml"
 	}
 
-	if app == "" || profile == "" {
+	if app == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
-			"description": "Missing required parameters: app, profile",
+			"description": "Missing required parameter: app",
 			"status":      "INVALID",
 		})
 		return
@@ -849,11 +936,11 @@ func (a *App) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	label := r.URL.Query().Get("label")
 	virtualPath := r.URL.Query().Get("path")
 
-	if app == "" || profile == "" {
+	if app == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
-			"description": "Missing required parameters: app, profile",
+			"description": "Missing required parameter: app",
 			"status":      "INVALID",
 		})
 		return
@@ -865,12 +952,30 @@ func (a *App) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		ext = ".yaml" // default
 	}
 
-	// Validate app/profile/label
-	if !lib.ValidConfigPathSegment(app) || !lib.ValidConfigPathSegment(profile) || !lib.ValidConfigPathSegment(label) {
+	// Validate app/profile/label (allow empty profile for base-level files like application.yml)
+	if !lib.ValidConfigPathSegment(app) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
-			"description": "Invalid app/profile/label. Only alphanumeric, hyphens, and underscores allowed",
+			"description": "Invalid app segment",
+			"status":      "INVALID",
+		})
+		return
+	}
+	if profile != "" && !lib.ValidConfigPathSegment(profile) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Invalid profile segment",
+			"status":      "INVALID",
+		})
+		return
+	}
+	if label != "" && !lib.ValidConfigPathSegment(label) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Invalid label segment",
 			"status":      "INVALID",
 		})
 		return

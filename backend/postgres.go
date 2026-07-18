@@ -292,18 +292,15 @@ func (b *postgresUserBackend) PutFile(app, profile, label, ext string, content [
 	if !supportedExtension(ext) {
 		return fmt.Errorf("unsupported extension %q", ext)
 	}
-	// Validate params to prevent SQL injection.
-	if !validConfigSegment(app) || !validConfigSegment(profile) || (label != "" && !validConfigSegment(label)) {
+	// Validate params to prevent SQL injection (empty profile/label are allowed).
+	if !validConfigSegment(app) || (profile != "" && !validConfigSegment(profile)) || (label != "" && !validConfigSegment(label)) {
 		return fmt.Errorf("invalid app/profile/label segment")
 	}
 
 	// Derive a standard filename for the path column so GetFileByPath can
 	// locate files uploaded via the standard endpoint.
-	filename := fmt.Sprintf("%s%s", app, profile)
-	if label != "" {
-		filename = filename + "-" + label
-	}
-	filename = filename + ext
+	filenameWithoutExt := BuildConfigFilename(app, profile, label)
+	filename := filenameWithoutExt + ext
 	path := fmt.Sprintf("%s/%s", app, filename)
 
 	q := fmt.Sprintf(
@@ -328,7 +325,7 @@ func (b *postgresUserBackend) PutFileWithFullPath(app, profile, label, ext, full
 	if !supportedExtension(ext) {
 		return fmt.Errorf("unsupported extension %q", ext)
 	}
-	if !validConfigSegment(app) || !validConfigSegment(profile) || (label != "" && !validConfigSegment(label)) {
+	if !validConfigSegment(app) || (profile != "" && !validConfigSegment(profile)) || (label != "" && !validConfigSegment(label)) {
 		return fmt.Errorf("invalid app/profile/label segment")
 	}
 	if !IsValidRelativePath(fullPath) {

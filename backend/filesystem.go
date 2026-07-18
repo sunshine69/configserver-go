@@ -24,13 +24,36 @@ func NewFileSystemBackend(baseDir string) *FileSystemBackend {
 	return &FileSystemBackend{BaseDir: baseDir}
 }
 
+// GetFile resolves a config file from the filesystem using the Spring Cloud Config
+// hierarchical naming convention. The filename is built as:
+//
+//	{app}[-{profile}][-{label}].{ext}
+//
+// Empty profile or label segments are omitted (no trailing hyphens). For example:
+//
+//	GetFile("foo", "dev", "main", ".yaml")  → foo-dev-main.yaml
+//	GetFile("foo", "dev", "", ".yaml")      → foo-dev.yaml
+//	GetFile("foo", "", "main", ".yaml")     → foo-main.yaml
+//	GetFile("foo", "", "", ".yaml")         → foo.yaml
 func (b *FileSystemBackend) GetFile(app, profile, label string, ext string) ([]byte, error) {
-	filenameWithoutExt := fmt.Sprintf("%s-%s", app, profile)
-	if label != "" {
-		filenameWithoutExt = filenameWithoutExt + "-" + label
-	}
+	filenameWithoutExt := BuildConfigFilename(app, profile, label)
 	fullPath := filepath.Join(b.BaseDir, filenameWithoutExt+ext)
 	return b.readFile(fullPath)
+}
+
+// BuildConfigFilename constructs a config filename without extension using the
+// Spring Cloud Config hierarchical naming convention: {app}[-{profile}][-{label}].
+// Empty profile or label segments are omitted to avoid trailing hyphens.
+func BuildConfigFilename(app, profile, label string) string {
+	var parts []string
+	parts = append(parts, app)
+	if profile != "" {
+		parts = append(parts, profile)
+	}
+	if label != "" {
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, "-")
 }
 
 func (b *FileSystemBackend) GetFileByPath(filename string) ([]byte, error) {
@@ -64,10 +87,7 @@ func (b *FileSystemBackend) PutFile(app, profile, label, ext string, content []b
 	if !supportedExtension(ext) {
 		return fmt.Errorf("unsupported extension %q", ext)
 	}
-	filenameWithoutExt := fmt.Sprintf("%s-%s", app, profile)
-	if label != "" {
-		filenameWithoutExt = filenameWithoutExt + "-" + label
-	}
+	filenameWithoutExt := BuildConfigFilename(app, profile, label)
 	fullPath := filepath.Join(b.BaseDir, filenameWithoutExt+ext)
 
 	// Resolve to absolute to check for directory traversal.
@@ -110,10 +130,7 @@ func (b *FileSystemBackend) PutFileWithFullPath(app, profile, label, ext, fullPa
 		destPath = filepath.Join(b.BaseDir, fullPath)
 	} else {
 		// Fall back to standard naming convention
-		filenameWithoutExt := fmt.Sprintf("%s-%s", app, profile)
-		if label != "" {
-			filenameWithoutExt = filenameWithoutExt + "-" + label
-		}
+		filenameWithoutExt := BuildConfigFilename(app, profile, label)
 		destPath = filepath.Join(b.BaseDir, filenameWithoutExt+ext)
 	}
 
@@ -157,10 +174,7 @@ func (b *FileSystemBackend) DeleteFile(app, profile, label, ext string) error {
 	if !supportedExtension(ext) {
 		return fmt.Errorf("unsupported extension %q", ext)
 	}
-	filenameWithoutExt := fmt.Sprintf("%s-%s", app, profile)
-	if label != "" {
-		filenameWithoutExt = filenameWithoutExt + "-" + label
-	}
+	filenameWithoutExt := BuildConfigFilename(app, profile, label)
 	fullPath := filepath.Join(b.BaseDir, filenameWithoutExt+ext)
 
 	// Resolve to absolute to check for directory traversal.
