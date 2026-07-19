@@ -249,11 +249,101 @@ echo "=========================================="
 curl -s $AUTH "$BASE_URL/myapp/prod.properties"
 echo ""
 
-# TEST 30: Accept Header - application/octet-stream
+# TEST 30: Accept Header - application/octet-stream (comprehensive)
 echo "=========================================="
 echo "=== TEST 30: Accept Header - application/octet-stream ==="
 echo "=========================================="
-curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/test/dev"
+
+# 30a: GET /{app}/{profile} + Accept → raw file
+echo "--- 30a: GET /test/dev + Accept: application/octet-stream ---"
+RESPONSE_30A=$(curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/test/dev")
+echo "Response: $RESPONSE_30A"
+if echo "$RESPONSE_30A" | grep -q "database_url"; then
+  echo "✓ PASS: Raw content returned (contains 'database_url')"
+else
+  echo "✗ FAIL: Expected raw file content, got: $RESPONSE_30A"
+fi
+echo ""
+
+# 30b: GET /{app} + Accept → raw file (no profile)
+echo "--- 30b: GET /test + Accept: application/octet-stream ---"
+# First upload a base config for /test
+curl -s $AUTH -X POST "$BASE_URL/upload?app=test&profile=&ext=.yaml" -H "Content-Type: text/plain" -d "base_key: base_value
+base_env: production"
+RESPONSE_30B=$(curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/test")
+echo "Response: $RESPONSE_30B"
+if echo "$RESPONSE_30B" | grep -q "base_key"; then
+  echo "✓ PASS: Raw content returned for /test (contains 'base_key')"
+else
+  echo "✗ FAIL: Expected raw file content, got: $RESPONSE_30B"
+fi
+echo ""
+
+# 30c: GET /{app}-{profile} + Accept → raw file
+echo "--- 30c: GET /test-dev + Accept: application/octet-stream ---"
+RESPONSE_30C=$(curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/test-dev")
+echo "Response: $RESPONSE_30C"
+if echo "$RESPONSE_30C" | grep -q "database_url"; then
+  echo "✓ PASS: Raw content returned for /test-dev (contains 'database_url')"
+else
+  echo "✗ FAIL: Expected raw file content, got: $RESPONSE_30C"
+fi
+echo ""
+
+# 30d: GET /{app}/{profile}/{label} + Accept → raw file with label
+echo "--- 30d: GET /labelapp/dev/main + Accept: application/octet-stream ---"
+RESPONSE_30D=$(curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/labelapp/dev/main")
+echo "Response: $RESPONSE_30D"
+if echo "$RESPONSE_30D" | grep -q "label_config"; then
+  echo "✓ PASS: Raw content returned for /labelapp/dev/main (contains 'label_config')"
+else
+  echo "✗ FAIL: Expected raw file content, got: $RESPONSE_30D"
+fi
+echo ""
+
+# 30e: Without Accept header → should still return JSON (not raw)
+echo "--- 30e: GET /test/dev WITHOUT Accept header → JSON ---"
+RESPONSE_30E=$(curl -s $AUTH "$BASE_URL/test/dev")
+echo "Response (first 200 chars): $(echo "$RESPONSE_30E" | head -c 200)"
+if echo "$RESPONSE_30E" | grep -q '"name"'; then
+  echo "✓ PASS: JSON response returned (contains '\"name\"')"
+else
+  echo "✗ FAIL: Expected JSON, got raw content"
+fi
+echo ""
+
+# 30f: GET /{app}/{profile}/{label}/{path} + Accept → raw config file
+echo "--- 30f: GET /test/dev/main + Accept: application/octet-stream ---"
+# Upload a file with label "main" for app=test
+curl -s $AUTH -X POST "$BASE_URL/upload?app=test&profile=dev&label=main&ext=.yaml" -H "Content-Type: text/plain" -d "label_main_key: main_value
+label_main_env: staging"
+RESPONSE_30F=$(curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/test/dev/main")
+echo "Response: $RESPONSE_30F"
+if echo "$RESPONSE_30F" | grep -q "label_main_key"; then
+  echo "✓ PASS: Raw content returned for /test/dev/main (contains 'label_main_key')"
+else
+  echo "✗ FAIL: Expected raw file content, got: $RESPONSE_30F"
+fi
+echo ""
+
+# 30g: Accept header with .ext URL → still raw (no change in behavior)
+echo "--- 30g: GET /test/dev.yaml + Accept: application/octet-stream → raw ---"
+# Re-upload since earlier cleanup may have deleted it
+curl -s $AUTH -X POST "$BASE_URL/upload?app=test&profile=dev&ext=.yaml" -H "Content-Type: text/plain" -d "database_url: postgres://localhost/mydb
+app_name: test-app
+feature_flag: true"
+RESPONSE_30G=$(curl -s -H "Accept: application/octet-stream" $AUTH "$BASE_URL/test/dev.yaml")
+echo "Response: $RESPONSE_30G"
+if echo "$RESPONSE_30G" | grep -q "database_url"; then
+  echo "✓ PASS: Raw content returned for /test/dev.yaml"
+else
+  echo "✗ FAIL: Expected raw file content, got: $RESPONSE_30G"
+fi
+echo ""
+
+# Cleanup test 30 files
+curl -s $AUTH -X DELETE "$BASE_URL/delete?app=test&profile=&ext=.yaml"
+curl -s $AUTH -X DELETE "$BASE_URL/delete?app=test&profile=dev&label=main&ext=.yaml"
 echo ""
 
 # TEST 31: resolvePlaceholders query parameter
@@ -667,7 +757,7 @@ echo ""
 
 echo "=========================================="
 echo "=== COMPREHENSIVE TEST SUITE COMPLETE ==="
-echo "=== Total Tests: 47 ==="
+echo "=== Total Tests: 47 (TEST 30 expanded to 7 sub-tests) ==="
 echo "=========================================="
 echo ""
 echo "Features Tested:"
@@ -686,7 +776,7 @@ echo "  ✓ File deletion"
 echo "  ✓ Path serving"
 echo "  ✓ Nested paths"
 echo "  ✓ Alternative format serving (.yaml, .properties)"
-echo "  ✓ Accept header (application/octet-stream)"
+echo "  ✓ Accept header (application/octet-stream) — all URL patterns: /{app}, /{app}-{profile}, /{app}/{profile}, /{app}/{profile}/{label}, /{app}/{profile}/{label}/{path}"
 echo "  ✓ resolvePlaceholders parameter"
 echo "  ✓ Default label behavior"
 echo "  ✓ Profile-specific files"

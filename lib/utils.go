@@ -4,7 +4,6 @@ import (
 	"configservergo/backend"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -158,15 +157,8 @@ func FlatternDataToMap(data interface{}, prefix string, result map[string]interf
 var CipherPattern = regexp.MustCompile(`[']{0,1}\{cipher\}[^}']+[']{0,1}`)
 var PlaceholderPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
-// ResolvePlaceholders replaces ${VAR} placeholders with environment variable values.
-// If the environment variable is not set, returns the placeholder as-is.
+// ResolvePlaceholders is disabled — returns content unchanged.
+// ${VAR} placeholders are preserved as-is, never replaced with environment variables.
 func ResolvePlaceholders(content string) string {
-	return PlaceholderPattern.ReplaceAllStringFunc(content, func(match string) string {
-		varName := match[2 : len(match)-1] // Extract variable name between ${ and }
-		value := os.Getenv(varName)
-		if value != "" {
-			return value
-		}
-		return match // Keep placeholder if env var not set
-	})
+	return content
 }

@@ -378,7 +378,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case pathsLen == 1:
-		// Check if single path segment contains hyphen (app-profile format)
+		// Single segment: /{app} or /{app}-{profile} or /{app}-{profile}.{ext}
 		if idx := strings.Index(paths[0], "-"); idx > 0 {
 			app := paths[0][:idx]
 			profile := paths[0][idx+1:]
@@ -402,18 +402,88 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// If Accept header requests raw content, serve raw config file
+			if acceptsRawContent {
+				for _, fileExt := range lib.SupportedConfigFileType {
+					data, err := be.GetFile(app, profile, "", fileExt)
+					if backend.IsNotExist(err) {
+						continue
+					}
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "application/octet-stream")
+					w.Write(data)
+					return
+				}
+				http.Error(w, "File not found", http.StatusNotFound)
+				return
+			}
+
 			// No extension: serve as JSON GetValuesResponse
 			a.serveValues(w, be, user, app, []string{profile}, "")
 			return
 		}
+
+		// No hyphen: /{app} — serve as raw config file if Accept header set
+		if acceptsRawContent {
+			for _, fileExt := range lib.SupportedConfigFileType {
+				data, err := be.GetFile(paths[0], "", "", fileExt)
+				if backend.IsNotExist(err) {
+					continue
+				}
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Write(data)
+				return
+			}
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+
+		// Fall through to path-based file serving
 		serveFile(w, be, paths[0])
 		return
 	case pathsLen == 2:
 		// Check if client wants raw content via Accept header
 		if acceptsRawContent {
-			// Serve as raw file by path
-			filePath := paths[0] + "/" + paths[1]
-			serveFile(w, be, filePath)
+			// Serve raw config file using Spring Cloud Config naming convention
+			app := paths[0]
+			profile, fileExt := lib.SplitProfileAndExt(paths[1])
+			// If path has a supported extension, use it; otherwise try all
+			if fileExt != "" && lib.SupportedFileExtension(fileExt) {
+				data, err := be.GetFile(app, profile, "", fileExt)
+				if backend.IsNotExist(err) {
+					http.Error(w, "File not found", http.StatusNotFound)
+					return
+				}
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Write(data)
+				return
+			}
+			// No extension: try all supported extensions
+			for _, ext := range lib.SupportedConfigFileType {
+				data, err := be.GetFile(app, profile, "", ext)
+				if backend.IsNotExist(err) {
+					continue
+				}
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Write(data)
+				return
+			}
+			http.Error(w, "File not found", http.StatusNotFound)
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])
@@ -421,8 +491,51 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	case pathsLen == 3:
 		// Could be /{app}/{profile}/{label} or /{app}/{profile}/{path}
+		if acceptsRawContent {
+			// Serve raw config file with label using Spring Cloud Config naming convention
+			app := paths[0]
+			profile := paths[1]
+			label := paths[2]
+			// If path contains '.', use SplitProfileAndExt to get label and ext
+			l, e := lib.SplitProfileAndExt(paths[2])
+			if e != "" {
+				label = l
+				for _, fileExt := range lib.SupportedConfigFileType {
+					if strings.EqualFold(e, fileExt) {
+						data, err := be.GetFile(app, profile, label, fileExt)
+						if backend.IsNotExist(err) {
+							continue
+						}
+						if err != nil {
+							http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+							return
+						}
+						w.Header().Set("Content-Type", "application/octet-stream")
+						w.Write(data)
+						return
+					}
+				}
+			} else {
+				// No extension: try all supported extensions
+				for _, fileExt := range lib.SupportedConfigFileType {
+					data, err := be.GetFile(app, profile, label, fileExt)
+					if backend.IsNotExist(err) {
+						continue
+					}
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "application/octet-stream")
+					w.Write(data)
+					return
+				}
+			}
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
 		label, _ := lib.SplitProfileAndExt(paths[2])
-		if acceptsRawContent || strings.Contains(paths[2], ".") {
+		if strings.Contains(paths[2], ".") {
 			// Serve as raw file by path
 			filePath := paths[0] + "/" + paths[1] + "/" + paths[2]
 			serveFile(w, be, filePath)
@@ -433,6 +546,29 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	case pathsLen > 3:
 		// Multi-segment path: /{app}/{profile}/{label}/{path}
+		if acceptsRawContent {
+			// Serve raw config file with label using Spring Cloud Config naming convention
+			app := paths[0]
+			profile := paths[1]
+			label := paths[2]
+			filePath := strings.Join(paths[3:], "/")
+			for _, ext := range lib.SupportedConfigFileType {
+				data, err := be.GetFile(app, profile, label, ext)
+				if backend.IsNotExist(err) {
+					continue
+				}
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Write(data)
+				return
+			}
+			// If raw config files not found, try literal path
+			serveFile(w, be, filePath)
+			return
+		}
 		// Try to serve as a raw file. The last path segment is the filename.
 		requestFileName := paths[pathsLen-1]
 		serveFile(w, be, requestFileName)

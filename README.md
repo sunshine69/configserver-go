@@ -16,7 +16,7 @@ Built for reliability and performance, this server supports multiple backends (P
 | Format support | ✅ | YAML, JSON, Properties — with extension priority |
 | Label support | ✅ | `/{app}/{profile}/{label}` for branch/versioning |
 | Encryption/Decryption | ✅ | Ciphertext stored, decrypted at fetch time |
-| Placeholder resolution | ✅ | `${VAR}` resolved from environment variables |
+| Placeholder resolution | ❌ | Disabled — `${VAR}` placeholders are preserved as-is, never replaced |
 | Raw file serving | ✅ | `GET /{app}-{profile}.{ext}` returns raw bytes |
 | Binary file serving | ✅ | `Accept: application/octet-stream` support |
 | Authentication | ✅ | Basic Auth per user with isolated backends |
@@ -374,7 +374,7 @@ Run the full test suite covering all features:
 - Format support (YAML, JSON, properties)
 - Label support
 - Encryption/decryption
-- Placeholder resolution
+- Placeholder resolution (disabled — no replacement in any response)
 - Raw file serving
 - Binary file serving
 - Path traversal prevention
