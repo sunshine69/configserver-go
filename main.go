@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	u "github.com/sunshine69/golang-tools/utils"
@@ -42,13 +44,27 @@ type ServerConfig struct {
 	Users []UserConfig `yaml:"users"`
 }
 
+// PasswordMeta contains metadata about a stored password.
+// Exp: "noexpire" or a datetime string (RFC 3339) when the password expires.
+// CreatedAt: ISO 8631 datetime when the password was created.
+// Description: Optional note about the password.
+type PasswordMeta struct {
+	Exp         string `json:"exp"`
+	CreatedAt   string `json:"created_at"`
+	Description string `json:"description"`
+}
+
+// UserConfig holds per-user configuration.
+// Password is the main (break-glass) password.
+// Passwords maps SHA-256 hex digests of additional passwords to their metadata.
 type UserConfig struct {
-	Username      string                     `yaml:"username"`
-	Password      string                     `yaml:"password"`
-	EncryptionKey string                     `yaml:"encryption_key"`
-	Directory     string                     `yaml:"directory"`
-	Backend       string                     `yaml:"backend"`
-	Postgres      backend.PostgresUserConfig `yaml:"postgres"`
+	Username      string                            `yaml:"username"`
+	Password      string                            `yaml:"password"`
+	Passwords     map[string]PasswordMeta           `yaml:"passwords"`
+	EncryptionKey string                            `yaml:"encryption_key"`
+	Directory     string                            `yaml:"directory"`
+	Backend       string                            `yaml:"backend"`
+	Postgres      backend.PostgresUserConfig        `yaml:"postgres"`
 }
 
 // UserBackend satisfies backend.UserBackend.
@@ -195,6 +211,10 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /upload", basicAuth(a.uploadHandler))
 	mux.HandleFunc("DELETE /delete", basicAuth(a.deleteHandler))
 	mux.HandleFunc("GET /list", basicAuth(a.listHandler))
+	// Multi-password management — authenticated endpoints.
+	mux.HandleFunc("POST /addpassword", basicAuth(a.addPasswordHandler))
+	mux.HandleFunc("GET /listpasswords", basicAuth(a.listPasswordsHandler))
+	mux.HandleFunc("DELETE /delpassword", basicAuth(a.delPasswordHandler))
 	mux.HandleFunc("GET /health", a.healthHandler)
 	// Swagger UI
 	mux.Handle("GET /swagger/{path...}", httpSwagger.Handler(
@@ -279,6 +299,11 @@ func processCipherPatterns(content string, user *UserConfig) string {
 	})
 }
 
+// basicAuth checks username/password against the main password or any
+// additional password registered in user.Passwords. It computes a SHA-256
+// hex digest of the supplied password and looks it up in the Passwords map.
+// Expired passwords are rejected. The authenticated username is stored in
+// the X-Username request header so downstream handlers can identify the user.
 func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
@@ -294,12 +319,42 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if password != user.Password {
+
+		// 1. Try the main password first (backward-compatible path).
+		if password == user.Password {
+			r.Header.Set("X-Username", username)
+			next(w, r)
+			return
+		}
+
+		// 2. Try additional passwords stored in the Passwords map.
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
+		meta, exists := user.Passwords[hash]
+		if !exists {
 			w.Header().Set("WWW-Authenticate", `Basic realm="ConfigServer Auth"`)
 			fmt.Fprintln(os.Stderr, "Password not matched")
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+
+		// 3. Check expiration.
+		if meta.Exp != "" && meta.Exp != "noexpire" {
+			expTime, err := time.Parse(time.RFC3339, meta.Exp)
+			if err != nil {
+				// Malformed expiry — treat as expired.
+				w.Header().Set("WWW-Authenticate", `Basic realm="ConfigServer Auth"`)
+				fmt.Fprintln(os.Stderr, "Password expired (malformed expiry)")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if time.Now().After(expTime) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="ConfigServer Auth"`)
+				fmt.Fprintln(os.Stderr, "Password expired")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
 		r.Header.Set("X-Username", username)
 		next(w, r)
 	}
@@ -1218,6 +1273,193 @@ func (a *App) uploadHandler(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} map[string]interface{} "Server is healthy"
 // @Failure 503 {object} map[string]interface{} "Server is unhealthy"
 // @Router /health [get]
+
+// addPasswordHandler allows an authenticated user to add a new password to
+// their Passwords map. The new password's SHA-256 digest is computed server-
+// side, so the plaintext is never persisted in plaintext form.
+//
+// Form values (application/x-www-form-urlencoded):
+//   - password (required): the new password value
+//   - exp (required):      "noexpire" or an RFC 3339 datetime
+//   - description (opt):   an arbitrary note
+//
+// @Summary Add a new password
+// @Description Adds a new SHA-256-hashed password with metadata for the current user.
+//
+// @Tags Auth
+// @Accept form-urlencoded
+// @Produce json
+// @Param password formData string true "New password" minlength(1)
+// @Param exp formData string true "Expiry — 'noexpire' or RFC 3339 datetime"
+// @Param description formData string false "Optional note"
+// @Success 200 {object} map[string]interface{} "Password added"
+// @Failure 400 {object} ErrorResponse "Bad request — missing fields or invalid expiry"
+// @Failure 401 {object} ErrorResponse "Unauthorized — invalid credentials"
+// @Router /addpassword [post]
+// @Security BasicAuth
+func (a *App) addPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Can not parse form", http.StatusBadRequest)
+		return
+	}
+
+	password := r.FormValue("password")
+	if password == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Missing required parameter: password",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	exp := r.FormValue("exp")
+	if exp == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Missing required parameter: exp",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Validate exp: either "noexpire" or a parseable RFC 3339 timestamp.
+	if exp != "noexpire" {
+		if _, err := time.Parse(time.RFC3339, exp); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"description": fmt.Sprintf("Invalid exp format: %v", err),
+				"status":      "INVALID",
+			})
+			return
+		}
+	}
+
+	desc := r.FormValue("description")
+	username := r.Header.Get("X-Username")
+	user := a.Users[username]
+	if user.Passwords == nil {
+		user.Passwords = make(map[string]PasswordMeta)
+	}
+
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
+
+	// Prevent overwriting an existing password key.
+	if _, exists := user.Passwords[hash]; exists {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "A password with this digest already exists",
+			"status":      "DUPLICATE",
+		})
+		return
+	}
+
+	user.Passwords[hash] = PasswordMeta{
+		Exp:         exp,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		Description: desc,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{
+		"description": "Password added",
+		"status":      "OK",
+		"username":    username,
+		"hash":        hash,
+		"exp":         exp,
+	})
+}
+
+// listPasswordsHandler returns the metadata of all additional passwords for
+// the current user. The plaintext passwords themselves are never exposed —
+// only SHA-256 hashes and their associated metadata.
+//
+// @Summary List passwords
+// @Description Returns the SHA-256 hashes and metadata of all additional passwords for the current user.
+//
+// @Tags Auth
+// @Produce json
+// @Success 200 {object} map[string]interface{} "List of passwords"
+// @Failure 401 {object} ErrorResponse "Unauthorized — invalid credentials"
+// @Router /listpasswords [get]
+// @Security BasicAuth
+func (a *App) listPasswordsHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Header.Get("X-Username")
+	user := a.Users[username]
+
+	passwords := make(map[string]map[string]string, len(user.Passwords))
+	for hash, meta := range user.Passwords {
+		passwords[hash] = map[string]string{
+			"exp":         meta.Exp,
+			"created_at":  meta.CreatedAt,
+			"description": meta.Description,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{
+		"username":  username,
+		"passwords": passwords,
+	})
+}
+
+// delPasswordHandler deletes a password by its SHA-256 digest. The digest is
+// provided as a query parameter called "hash".
+//
+// @Summary Delete a password
+// @Description Deletes a specific additional password identified by its SHA-256 hash.
+//
+// @Tags Auth
+// @Produce json
+// @Param hash query string true "SHA-256 hash of the password to delete" minlength(64)
+// @Success 200 {object} map[string]interface{} "Password deleted"
+// @Failure 400 {object} ErrorResponse "Bad request — missing hash"
+// @Failure 401 {object} ErrorResponse "Unauthorized — invalid credentials"
+// @Failure 404 {object} ErrorResponse "Not found — password hash does not exist"
+// @Router /delpassword [delete]
+// @Security BasicAuth
+func (a *App) delPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	hash := r.URL.Query().Get("hash")
+	if hash == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Missing required parameter: hash",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	username := r.Header.Get("X-Username")
+	user := a.Users[username]
+
+	if _, exists := user.Passwords[hash]; !exists {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Password not found",
+			"status":      "NOT_FOUND",
+		})
+		return
+	}
+
+	delete(user.Passwords, hash)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{
+		"description": "Password deleted",
+		"status":      "OK",
+		"username":    username,
+		"hash":        hash,
+	})
+}
 func (a *App) healthHandler(w http.ResponseWriter, r *http.Request) {
 	health := map[string]interface{}{
 		"status": "UP",
