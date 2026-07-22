@@ -15,6 +15,67 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/addpassword": {
+            "post": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "description": "Adds a new SHA-256-hashed password with metadata for the current user.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Add a new password",
+                "parameters": [
+                    {
+                        "minLength": 1,
+                        "type": "string",
+                        "description": "New password",
+                        "name": "password",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Expiry — 'noexpire' or RFC 3339 datetime",
+                        "name": "exp",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional note",
+                        "name": "description",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Password added",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request — missing fields or invalid expiry",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized — invalid credentials",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/decrypt": {
             "post": {
                 "security": [
@@ -145,6 +206,60 @@ const docTemplate = `{
                 }
             }
         },
+        "/delpassword": {
+            "delete": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "description": "Deletes a specific additional password identified by its SHA-256 hash.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Delete a password",
+                "parameters": [
+                    {
+                        "minLength": 64,
+                        "type": "string",
+                        "description": "SHA-256 hash of the password to delete",
+                        "name": "hash",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Password deleted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request — missing hash",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized — invalid credentials",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not found — password hash does not exist",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/encrypt": {
             "post": {
                 "security": [
@@ -231,6 +346,38 @@ const docTemplate = `{
                         "description": "Backend error",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/listpasswords": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "description": "Returns the SHA-256 hashes and metadata of all additional passwords for the current user.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "List passwords",
+                "responses": {
+                    "200": {
+                        "description": "List of passwords",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized — invalid credentials",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
                         }
                     }
                 }
@@ -361,7 +508,69 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Profile name (e.g., dev, prod, staging)",
+                        "description": "Profile name(s) - comma-separated for multiple profiles",
+                        "name": "profile",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized - invalid credentials",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Config not found or file not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "Backend error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/{app}/{profile}/{label}": {
+            "get": {
+                "security": [
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "description": "Fetch configuration for a Spring Cloud Config application.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Config"
+                ],
+                "summary": "Retrieve application configuration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Application name",
+                        "name": "app",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Profile name(s) - comma-separated for multiple profiles",
                         "name": "profile",
                         "in": "path",
                         "required": true
@@ -370,12 +579,6 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Git label/branch (optional)",
                         "name": "label",
-                        "in": "path"
-                    },
-                    {
-                        "type": "string",
-                        "description": "File extension (.yaml, .json, .properties)",
-                        "name": "ext",
                         "in": "path"
                     }
                 ],

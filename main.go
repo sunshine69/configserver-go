@@ -413,8 +413,7 @@ func migrateDB(dsn string) error {
 // @Failure 404 {string} string "Config not found or file not found"
 // @Failure 502 {string} string "Backend error"
 // @Router /{app}/{profile} [get]
-// @Router /{app}/{profile1},{profile2} [get]
-// @Router /{app}/{profile}/{label}/{path} [get]
+// @Router /{app}/{profile}/{label} [get]
 // @Security BasicAuth
 func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 	user := a.Users[r.Header.Get("X-Username")]
@@ -1287,7 +1286,6 @@ func (a *App) uploadHandler(w http.ResponseWriter, r *http.Request) {
 // @Description Adds a new SHA-256-hashed password with metadata for the current user.
 //
 // @Tags Auth
-// @Accept form-urlencoded
 // @Produce json
 // @Param password formData string true "New password" minlength(1)
 // @Param exp formData string true "Expiry — 'noexpire' or RFC 3339 datetime"

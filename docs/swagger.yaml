@@ -60,18 +60,10 @@ paths:
         name: app
         required: true
         type: string
-      - description: Profile name (e.g., dev, prod, staging)
+      - description: Profile name(s) - comma-separated for multiple profiles
         in: path
         name: profile
         required: true
-        type: string
-      - description: Git label/branch (optional)
-        in: path
-        name: label
-        type: string
-      - description: File extension (.yaml, .json, .properties)
-        in: path
-        name: ext
         type: string
       produces:
       - application/json
@@ -97,6 +89,91 @@ paths:
       summary: Retrieve application configuration
       tags:
       - Config
+  /{app}/{profile}/{label}:
+    get:
+      consumes:
+      - application/json
+      description: Fetch configuration for a Spring Cloud Config application.
+      parameters:
+      - description: Application name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Profile name(s) - comma-separated for multiple profiles
+        in: path
+        name: profile
+        required: true
+        type: string
+      - description: Git label/branch (optional)
+        in: path
+        name: label
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "401":
+          description: Unauthorized - invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "404":
+          description: Config not found or file not found
+          schema:
+            type: string
+        "502":
+          description: Backend error
+          schema:
+            type: string
+      security:
+      - BasicAuth: []
+      summary: Retrieve application configuration
+      tags:
+      - Config
+  /addpassword:
+    post:
+      description: Adds a new SHA-256-hashed password with metadata for the current
+        user.
+      parameters:
+      - description: New password
+        in: formData
+        minLength: 1
+        name: password
+        required: true
+        type: string
+      - description: Expiry — 'noexpire' or RFC 3339 datetime
+        in: formData
+        name: exp
+        required: true
+        type: string
+      - description: Optional note
+        in: formData
+        name: description
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Password added
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad request — missing fields or invalid expiry
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "401":
+          description: Unauthorized — invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      security:
+      - BasicAuth: []
+      summary: Add a new password
+      tags:
+      - Auth
   /decrypt:
     post:
       consumes:
@@ -185,6 +262,42 @@ paths:
       summary: Delete a configuration file
       tags:
       - Config
+  /delpassword:
+    delete:
+      description: Deletes a specific additional password identified by its SHA-256
+        hash.
+      parameters:
+      - description: SHA-256 hash of the password to delete
+        in: query
+        minLength: 64
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Password deleted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad request — missing hash
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "401":
+          description: Unauthorized — invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+        "404":
+          description: Not found — password hash does not exist
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      security:
+      - BasicAuth: []
+      summary: Delete a password
+      tags:
+      - Auth
   /encrypt:
     post:
       consumes:
@@ -244,6 +357,27 @@ paths:
       summary: List all configuration files
       tags:
       - Config
+  /listpasswords:
+    get:
+      description: Returns the SHA-256 hashes and metadata of all additional passwords
+        for the current user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of passwords
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized — invalid credentials
+          schema:
+            $ref: '#/definitions/main.ErrorResponse'
+      security:
+      - BasicAuth: []
+      summary: List passwords
+      tags:
+      - Auth
   /upload:
     post:
       consumes:
