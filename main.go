@@ -58,13 +58,13 @@ type PasswordMeta struct {
 // Password is the main (break-glass) password.
 // Passwords maps SHA-256 hex digests of additional passwords to their metadata.
 type UserConfig struct {
-	Username      string                            `yaml:"username"`
-	Password      string                            `yaml:"password"`
-	Passwords     map[string]PasswordMeta           `yaml:"passwords"`
-	EncryptionKey string                            `yaml:"encryption_key"`
-	Directory     string                            `yaml:"directory"`
-	Backend       string                            `yaml:"backend"`
-	Postgres      backend.PostgresUserConfig        `yaml:"postgres"`
+	Username      string                     `yaml:"username"`
+	Password      string                     `yaml:"password"`
+	Passwords     map[string]PasswordMeta    `yaml:"passwords"`
+	EncryptionKey string                     `yaml:"encryption_key"`
+	Directory     string                     `yaml:"directory"`
+	Backend       string                     `yaml:"backend"`
+	Postgres      backend.PostgresUserConfig `yaml:"postgres"`
 }
 
 // UserBackend satisfies backend.UserBackend.
@@ -339,7 +339,7 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// 3. Check expiration.
 		if meta.Exp != "" && meta.Exp != "noexpire" {
-			expTime, err := time.Parse(time.RFC3339, meta.Exp)
+			expTime, err := time.Parse("2006-01-02", meta.Exp)
 			if err != nil {
 				// Malformed expiry — treat as expired.
 				w.Header().Set("WWW-Authenticate", `Basic realm="ConfigServer Auth"`)
@@ -605,7 +605,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			app := paths[0]
 			profile := paths[1]
 			label := paths[2]
-			filePath := strings.Join(paths[3:], "/")
+			filePath := strings.Join(paths[2:], "/")
 			for _, ext := range lib.SupportedConfigFileType {
 				data, err := be.GetFile(app, profile, label, ext)
 				if backend.IsNotExist(err) {
@@ -623,9 +623,10 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			serveFile(w, be, filePath)
 			return
 		}
-		// Try to serve as a raw file. The last path segment is the filename.
-		requestFileName := paths[pathsLen-1]
-		serveFile(w, be, requestFileName)
+		// Non-raw: multi-segment path: /{app}/{profile}/{label}/{path}
+		// Build the full relative path from everything after app/profile
+		filePath := strings.Join(paths[2:], "/")
+		serveFile(w, be, filePath)
 		return
 	}
 }
@@ -676,9 +677,9 @@ func (a *App) hasLabelSources(be backend.Backend, user *UserConfig, app string, 
 // findLabelForFallback tries to determine which label to use for fetching
 // config when no explicit label is specified. It follows Spring Cloud Config
 // Server's default label fallback behavior:
-//   1. Try with empty label (standard naming: {app}-{profile}.{ext})
-//   2. Try label "main" ({app}-{profile}-main.{ext})
-//   3. Try label "master" ({app}-{profile}-master.{ext})
+//  1. Try with empty label (standard naming: {app}-{profile}.{ext})
+//  2. Try label "main" ({app}-{profile}-main.{ext})
+//  3. Try label "master" ({app}-{profile}-master.{ext})
 //
 // Returns the first label that has any config files.
 func (a *App) findLabelForFallback(be backend.Backend, user *UserConfig, app string, profiles []string) string {
@@ -708,10 +709,10 @@ func (a *App) findLabelForFallback(be backend.Backend, user *UserConfig, app str
 // Cipher values ({cipher}...) are decrypted.
 //
 // Property source resolution follows Spring Cloud Config Server precedence:
-//   1. {app}-{profile}.{ext}        (highest precedence)
-//   2. {app}.{ext}
-//   3. application-{profile}.{ext}
-//   4. application.{ext}             (lowest precedence)
+//  1. {app}-{profile}.{ext}        (highest precedence)
+//  2. {app}.{ext}
+//  3. application-{profile}.{ext}
+//  4. application.{ext}             (lowest precedence)
 //
 // Higher-precedence sources are listed earlier in the propertySources array.
 //

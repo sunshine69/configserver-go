@@ -6,9 +6,12 @@ exclude: ""
 fptn: .*
 group-index-a: []
 group-index-b: []
-path-exclude: ""
+path-exclude:
+    - ansible\/artifacts.*
+    - ansible-deploy-common\/.*
 profile: ""
 regexp: []
 save-config: cred-detect-config.yaml
 skipbinary: true
+words-file: ""
 words-list-url: https://github.com/dwyl/english-words/blob/master/words.txt

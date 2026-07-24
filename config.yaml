@@ -14,7 +14,14 @@ server:
 
     # Example 2: PostgreSQL backend (NEW)
     - username: user2
+      # main password.
       password: changeme
+      # Multi password/tokens format. Key is the sha256 of real password. Value is a dict
+      passwords:
+        '<sha256>':
+          exp: '2027-12-01' # Use noexpire is password not expire
+          desc: 'Some description. Not in use in prog yet'
+
       encryption_key: mySecretKey456
       backend: postgres
       # Optional: per-user postgres settings (overrides global)
