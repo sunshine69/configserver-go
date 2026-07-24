@@ -545,11 +545,17 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	case pathsLen == 3:
 		// Could be /{app}/{profile}/{label} or /{app}/{profile}/{path}
+		label, _ := lib.SplitProfileAndExt(paths[2])
+		// Only treat as raw file path if it's a single filename (no slashes)
+		if strings.Contains(paths[2], ".") && !strings.Contains(paths[2], "/") {
+			// Serve as raw file by path — paths[2] is the filename itself
+			serveFile(w, be, paths[2])
+			return
+		}
 		if acceptsRawContent {
 			// Serve raw config file with label using Spring Cloud Config naming convention
 			app := paths[0]
 			profile := paths[1]
-			label := paths[2]
 			// If path contains '.', use SplitProfileAndExt to get label and ext
 			l, e := lib.SplitProfileAndExt(paths[2])
 			if e != "" {
@@ -586,13 +592,6 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			http.Error(w, "File not found", http.StatusNotFound)
-			return
-		}
-		label, _ := lib.SplitProfileAndExt(paths[2])
-		if strings.Contains(paths[2], ".") {
-			// Serve as raw file by path
-			filePath := paths[0] + "/" + paths[1] + "/" + paths[2]
-			serveFile(w, be, filePath)
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])

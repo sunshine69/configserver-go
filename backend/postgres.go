@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS config_server_files (
     path        TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (username, app, profile, label, ext)
+    UNIQUE (username, app, profile, label, ext, path)
 );
 CREATE INDEX IF NOT EXISTS idx_config_server_files_lookup
     ON config_server_files (username, app, profile, label, ext);`
@@ -304,7 +304,7 @@ func (b *postgresUserBackend) PutFile(app, profile, label, ext string, content [
 	path := fmt.Sprintf("%s/%s", app, filename)
 
 	q := fmt.Sprintf(
-		"INSERT INTO %s (username, app, profile, label, ext, content, path, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) ON CONFLICT (username, app, profile, label, ext) DO UPDATE SET content = EXCLUDED.content, path = EXCLUDED.path, updated_at = now()",
+		"INSERT INTO %s (username, app, profile, label, ext, content, path, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) ON CONFLICT (username, app, profile, label, ext, path) DO UPDATE SET content = EXCLUDED.content, path = EXCLUDED.path, updated_at = now()",
 		b.table,
 	)
 	_, err := b.db.Exec(context.Background(), q,
@@ -356,7 +356,7 @@ func (b *postgresUserBackend) PutFileWithFullPath(app, profile, label, ext, full
 	}
 
 	q := fmt.Sprintf(
-		"INSERT INTO %s (username, app, profile, label, ext, content, path, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) ON CONFLICT (username, app, profile, label, ext) DO UPDATE SET content = EXCLUDED.content, path = EXCLUDED.path, updated_at = now()",
+		"INSERT INTO %s (username, app, profile, label, ext, content, path, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) ON CONFLICT (username, app, profile, label, ext, path) DO UPDATE SET content = EXCLUDED.content, path = EXCLUDED.path, updated_at = now()",
 		b.table,
 	)
 	_, err := b.db.Exec(context.Background(), q,
