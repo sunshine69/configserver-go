@@ -274,3 +274,213 @@ echo ""
 echo "=========================================="
 echo "=== TEST SUITE COMPLETE ==="
 echo "=========================================="
+
+# ============================================================
+# === MULTI-PASSWORD AUTHENTICATION TESTS ===
+# ============================================================
+
+echo ""
+echo "=========================================="
+echo "=== TEST 28: Add a temporary password ==="
+echo "=========================================="
+FUTURE_DATE=$(date -d "+24 hours" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+24H +"%Y-%m-%dT%H:%M:%SZ")
+echo "Expiry: $FUTURE_DATE"
+curl -s $AUTH -X POST "$BASE_URL/addpassword" \
+  -d "password=temptoken123" \
+  -d "exp=$FUTURE_DATE" \
+  -d "description=temporary-token-for-testing"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 29: Add a no-expire password ==="
+echo "=========================================="
+curl -s $AUTH -X POST "$BASE_URL/addpassword" \
+  -d "password=foreverpass" \
+  -d "exp=noexpire" \
+  -d "description=permanent-secondary-password"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 30: List all passwords ==="
+echo "=========================================="
+curl -s $AUTH "$BASE_URL/listpasswords" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 31: Authenticate with temp password ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:temptoken123" "$BASE_URL/test/dev"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 32: Authenticate with no-expire password ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:foreverpass" "$BASE_URL/test/dev"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 33: Authenticate with main password still works ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:changeme" "$BASE_URL/test/dev"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 34: Duplicate password rejected ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X POST "$BASE_URL/addpassword" \
+  -d "password=temptoken123" \
+  -d "exp=noexpire" \
+  -d "description=duplicate-test"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 35: Missing password field rejected ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X POST "$BASE_URL/addpassword" \
+  -d "exp=$FUTURE_DATE" \
+  -d "description=missing-password"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 36: Invalid exp format rejected ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X POST "$BASE_URL/addpassword" \
+  -d "password=badexp" \
+  -d "exp=not-a-date" \
+  -d "description=bad-exp"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 37: Delete a password by hash ==="
+echo "=========================================="
+# First get the hash from list
+TEMP_HASH=$(curl -s $AUTH "$BASE_URL/listpasswords" | jq -r '.passwords | keys[0]')
+echo "Deleting hash: $TEMP_HASH"
+curl -s $AUTH -X DELETE "$BASE_URL/delpassword?hash=$TEMP_HASH"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 38: Delete nonexistent hash ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X DELETE "$BASE_URL/delpassword?hash=nonexistenthash00000000000000000000000000000000000000000000000000000000"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 39: Delete missing hash param ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X DELETE "$BASE_URL/delpassword"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 40: Unauthorized on addpassword ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" -X POST "$BASE_URL/addpassword" \
+  -d "password=test" \
+  -d "exp=noexpire" \
+  -d "description=unauthorized"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 41: Unauthorized on listpasswords ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" "$BASE_URL/listpasswords"
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 42: Unauthorized on delpassword ==="
+echo "=========================================="
+curl -s -o /dev/null -w "HTTP Status: %{http_code}" -X DELETE "$BASE_URL/delpassword?hash=abc123"
+echo ""
+echo ""
+
+# ============================================================
+# === FORMAT-SPECIFIC ENDPOINTS (Spring Cloud Config Server) ===
+# ============================================================
+
+echo ""
+echo "=========================================="
+echo "=== TEST 43: YAML format endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{application}-{profile}.yml"
+curl -s $AUTH "$BASE_URL/test-dev.yml" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 44: JSON format endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{application}-{profile}.json"
+curl -s $AUTH "$BASE_URL/test-dev.json" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 45: Properties format endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{application}-{profile}.properties"
+curl -s $AUTH "$BASE_URL/test-dev.properties" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 46: Label-prefixed YAML endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{label}/{application}-{profile}.yml"
+curl -s $AUTH "$BASE_URL/main/test-dev.yml" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 47: Label-prefixed JSON endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{label}/{application}-{profile}.json"
+curl -s $AUTH "$BASE_URL/main/test-dev.json" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 48: Label-prefixed properties endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{label}/{application}-{profile}.properties"
+curl -s $AUTH "$BASE_URL/main/test-dev.properties" | jq .
+echo ""
+echo ""
+
+# ============================================================
+# === RAW FILE ENDPOINTS (Spring Cloud Config Server) ===
+# ============================================================
+
+echo ""
+echo "=========================================="
+echo "=== TEST 49: List files endpoint ==="
+echo "=========================================="
+echo "Spring spec: /{application}/{profile}/{label}/{path}/listFiles"
+curl -s $AUTH "$BASE_URL/test/dev/main/listFiles" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== TEST 50: List files for default label ==="
+echo "=========================================="
+echo "Spring spec: /{application}/{profile}/{path}/listFiles"
+curl -s $AUTH "$BASE_URL/test/dev/listFiles" | jq .
+echo ""
+echo ""
+
+echo "=========================================="
+echo "=== ALL TESTS COMPLETE ==="
+echo "=========================================="
