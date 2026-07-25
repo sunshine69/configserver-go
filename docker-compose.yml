@@ -7,10 +7,8 @@ services:
     env_file: .env
     environment:
       POSTGRES_USER: ${DATABASE_USER:-configuser}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-configpass}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-testpwd}
       POSTGRES_DB: ${DATABASE_NAME:-configdb}
-    #ports:
-    #  - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
@@ -27,12 +25,6 @@ services:
     ports:
       - "7777:7777"
     env_file: .env
-    environment:
-      - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432
-      - DATABASE_USER=${DATABASE_USER:-configuser}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-configpass}
-      - DATABASE_NAME=${DATABASE_NAME:-configdb}
     volumes:
       - ./config_data/user1:/data/config/user1
     depends_on:

@@ -1,43 +1,30 @@
 server:
-  port: 7777
+  port: ${SERVER_PORT:-7777}
   ssl:
     enable: false
     key: /path/to/private/keyfile
     cert: /path/to/certfile
   users:
-    # Example 1: Filesystem backend (existing)
-    - username: user1
-      password: changeme
-      encryption_key: mySecretKey123
-      directory: /data/config/user1
+    # User 1: Filesystem backend
+    - username: ${USER1_USERNAME}
+      password: ${USER1_PASSWORD}
+      encryption_key: ${USER1_ENCRYPTION_KEY}
+      directory: ${USER1_DIRECTORY}
       backend: filesystem
 
-    # Example 2: PostgreSQL backend (NEW)
-    - username: user2
-      # main password.
-      password: changeme
-      # Multi password/tokens format. Key is the sha256 of real password. Value is a dict
-      passwords:
-        '<sha256>':
-          exp: '2027-12-01' # Use noexpire is password not expire
-          desc: 'Some description. Not in use in prog yet'
-
-      encryption_key: mySecretKey456
+    # User 2: PostgreSQL backend
+    - username: ${USER2_USERNAME}
+      password: ${USER2_PASSWORD}
+      encryption_key: ${USER2_ENCRYPTION_KEY}
       backend: postgres
-      # Optional: per-user postgres settings (overrides global)
-      # postgres:
-      #   connection_string: "postgres://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT:-5432}/${DATABASE_NAME}?sslmode=disable"
-      #   table_name: custom_table_name
 
 backend_config:
   filesystem:
     directories:
-      - /data/config/user1
+      - ${USER1_DIRECTORY}
 
   git:
     url: http://etc.com
 
-  # Global postgres config
-  # Uses PG* env vars set by docker-compose
   postgres:
     default_connection_string: "postgres://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT:-5432}/${DATABASE_NAME}?sslmode=disable"

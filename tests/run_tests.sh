@@ -13,13 +13,10 @@ set -euo pipefail
 # ── Configuration ──────────────────────────────────────────────────────────────
 SERVER="${1:-http://localhost:7777}"
 
-USER1_USER="user1"
-USER1_PASS="changeme123"
-USER1_KEY="mySecretKey123"
-
-USER2_USER="user2"
-USER2_PASS="changeme456"
-USER2_KEY="mySecretKey456"
+# Dynamically read ALL credentials from .env so tests always match config.yaml
+set -a
+source "$(dirname "${BASH_SOURCE[0]}")/../.env"
+set +a
 
 PASS=0
 FAIL=0
@@ -558,7 +555,7 @@ expect_status "Decrypt invalid ciphertext returns 400" \
 
 # Encrypt/decrypt roundtrip with special chars
 TOTAL=$((TOTAL + 1))
-encrypted_special=$(curl -s -X POST "$SERVER/encrypt" -u "${USER1_USER}:${USER1_PASS}" -d "p@ss w0rd!#$%" 2>/dev/null)
+encrypted_special=$(curl -s -X POST "$SERVER/encrypt" -u "${USER1_USER}:${USER1_PASS}" -d "p@ss w0rd!#\$%" 2>/dev/null)
 decrypted_special=$(curl -s -X POST "$SERVER/decrypt" -u "${USER1_USER}:${USER1_PASS}" -d "$encrypted_special" 2>/dev/null)
 if [[ "$decrypted_special" == "p@ss w0rd!#\$%" ]]; then
     PASS=$((PASS + 1))
