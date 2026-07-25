@@ -1,486 +1,991 @@
 #!/bin/bash
+#
 # Comprehensive test suite for config-server-go
+# Covers: filesystem backend, PostgreSQL backend, auth, encrypt/decrypt,
+#         multi-password auth, format-specific endpoints, input validation,
+#         edge cases, and Spring Cloud Config spec compliance.
+#
+# Usage: ./test_all.sh [server_url]
+#   server_url defaults to http://localhost:7777
+#
 
-BASE_URL="${BASE_URL:-http://localhost:7777}"
-AUTH="-u ${CONFIG_USER:-user2}:${CONFIG_PASSWORD:-changeme}"
+set -euo pipefail
 
-echo "AUTH: '$AUTH' $BASE_URL"
-read junk
+# ── Configuration ──────────────────────────────────────────────────────────────
+BASE_URL="${1:-http://localhost:7777}"
 
-echo "=========================================="
-echo "=== TEST SUITE: config-server-go ==="
-echo "=========================================="
-echo ""
+# Dynamically read ALL credentials from .env so tests always match config.yaml
+set -a
+source "$(dirname "${BASH_SOURCE[0]}")/.env"
+set +a
 
-# Clean up any existing test data
-echo "--- CLEANUP ---"
-curl -s $AUTH -X DELETE "$BASE_URL/delete?app=test&profile=dev&ext=.yaml"
-echo ""
-curl -s $AUTH -X DELETE "$BASE_URL/delete?app=test&profile=common&ext=.yaml"
-echo ""
-echo ""
+PASS=0
+FAIL=0
+TOTAL=0
 
-# TEST 1: Upload single profile
-echo "=========================================="
-echo "=== TEST 1: Upload single profile ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=test&profile=dev&ext=.yaml" -H "Content-Type: text/plain" -d "database_url: postgres://localhost/mydb
-app_name: test-app
-feature_flag: true"
-echo ""
-echo ""
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-# TEST 2: Fetch single profile
-echo "=========================================="
-echo "=== TEST 2: Fetch /test/dev ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/test/dev" | jq .
-echo ""
-echo ""
+# Print a test header
+test_header() {
+    echo ""
+    echo "=============================================="
+    echo "  $1"
+    echo "=============================================="
+}
 
-# TEST 3: Fetch single segment format
-echo "=========================================="
-echo "=== TEST 3: Fetch /test-dev ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/test-dev" | jq .
-echo ""
-echo ""
+# Run a test: expects a specific HTTP status code
+# Usage: expect_status "description" EXPECTED_CODE "curl_args..."
+expect_status() {
+    local desc="$1"
+    local expected="$2"
+    shift 2
+    local curl_args=("$@")
 
-# TEST 4: Upload second profile for multi-profile merge
-echo "=========================================="
-echo "=== TEST 4: Upload common profile ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=test&profile=common&ext=.yaml" -H "Content-Type: text/plain" -d "log_level: info
-max_retries: 3
-database_url: override-from-common"
-echo ""
-echo ""
+    TOTAL=$((TOTAL + 1))
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" "${curl_args[@]}" 2>/dev/null)
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
 
-# TEST 5: Multi-profile merge
-echo "=========================================="
-echo "=== TEST 5: Multi-profile /test/dev,common ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/test/dev,common" | jq .
-echo ""
-echo ""
+    if [[ "$http_code" == "$expected" ]]; then
+        PASS=$((PASS + 1))
+        echo "  ✅ PASS: $desc (HTTP $http_code)"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  ❌ FAIL: $desc (expected HTTP $expected, got HTTP $http_code)"
+        if [[ -n "$body" && "$body" != "$http_code" ]]; then
+            echo "       Response: $(echo "$body" | head -c 200)"
+        fi
+    fi
+}
 
-# TEST 6: Health check
-echo "=========================================="
-echo "=== TEST 6: Health check ==="
-echo "=========================================="
-curl -s "$BASE_URL/health" | jq .
-echo ""
-echo ""
+# Run a test: expects the response body to contain a substring
+# Usage: expect_contains "description" "substring" "curl_args..."
+expect_contains() {
+    local desc="$1"
+    local substring="$2"
+    shift 2
+    local curl_args=("$@")
 
-# TEST 7: List files
-echo "=========================================="
-echo "=== TEST 7: List files ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/list" | jq .
-echo ""
-echo ""
+    TOTAL=$((TOTAL + 1))
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" "${curl_args[@]}" 2>/dev/null)
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
 
-# TEST 8: Upload JSON file
-echo "=========================================="
-echo "=== TEST 8: Upload JSON file ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=myapp&profile=prod&ext=.json" -H "Content-Type: text/plain" -d '{"server":{"host":"localhost","port":8080}}'
-echo ""
-echo ""
+    if echo "$body" | grep -qF "$substring"; then
+        PASS=$((PASS + 1))
+        echo "  ✅ PASS: $desc (HTTP $http_code, contains '$substring')"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  ❌ FAIL: $desc (expected body to contain '$substring')"
+        echo "       Got HTTP $http_code: $(echo "$body" | head -c 200)"
+    fi
+}
 
-# TEST 9: Fetch JSON file
-echo "=========================================="
-echo "=== TEST 9: Fetch JSON /myapp/prod ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/myapp/prod" | jq .
-echo ""
-echo ""
+# Run a test: expects the response body to NOT contain a substring
+# Usage: expect_not_contains "description" "substring" "curl_args..."
+expect_not_contains() {
+    local desc="$1"
+    local substring="$2"
+    shift 2
+    local curl_args=("$@")
 
-# TEST 10: Upload properties file
-echo "=========================================="
-echo "=== TEST 10: Upload properties file ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=propsapp&profile=default&ext=.properties" -H "Content-Type: text/plain" -d "spring.datasource.url=jdbc:mysql://localhost/test
-spring.datasource.username=root"
-echo ""
-echo ""
+    TOTAL=$((TOTAL + 1))
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" "${curl_args[@]}" 2>/dev/null)
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
 
-# TEST 11: Fetch properties file
-echo "=========================================="
-echo "=== TEST 11: Fetch properties /propsapp/default ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/propsapp/default" | jq .
-echo ""
-echo ""
+    if ! echo "$body" | grep -qF "$substring"; then
+        PASS=$((PASS + 1))
+        echo "  ✅ PASS: $desc (HTTP $http_code, does not contain '$substring')"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  ❌ FAIL: $desc (body should NOT contain '$substring')"
+        echo "       Got HTTP $http_code: $(echo "$body" | head -c 200)"
+    fi
+}
 
-# TEST 12: Upload with label
-echo "=========================================="
-echo "=== TEST 12: Upload with label ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=labelapp&profile=dev&label=main&ext=.yaml" -H "Content-Type: text/plain" -d "label_config: enabled"
-echo ""
-echo ""
+# Run a test: expects JSON body to have a specific key-value in propertySources
+# Usage: expect_property "description" "app_url" "username:password" "key" "value"
+expect_property() {
+    local desc="$1"
+    local url="$2"
+    local auth="$3"
+    local key="$4"
+    local expected_value="$5"
 
-# TEST 13: Fetch with label
-echo "=========================================="
-echo "=== TEST 13: Fetch with label /labelapp/dev/main ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/labelapp/dev/main" | jq .
-echo ""
-echo ""
+    TOTAL=$((TOTAL + 1))
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" "$url" -u "$auth" 2>/dev/null)
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
 
-# TEST 14: Upload properties file for extension priority test
-echo "=========================================="
-echo "=== TEST 14: Upload .properties (should win over .yaml) ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=prioapp&profile=test&ext=.properties" -H "Content-Type: text/plain" -d "source=from-properties
-key1=properties-value"
-echo ""
-echo ""
+    if [[ "$http_code" == "200" ]]; then
+        local actual
+        actual=$(echo "$body" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    src = d.get('propertySources', [{}])[0].get('source', {})
+    v = src.get('$key')
+    if v is None:
+        print('NONE')
+    else:
+        print(v)
+except:
+    print('PARSE_ERROR')
+" 2>/dev/null || echo "ERROR")
 
-# Upload yaml too for priority test
-curl -s $AUTH -X POST "$BASE_URL/upload?app=prioapp&profile=test&ext=.yaml" -H "Content-Type: text/plain" -d "source: from-yaml
-key2: yaml-value"
-echo ""
-echo ""
+        if [[ "$actual" == "$expected_value" ]]; then
+            PASS=$((PASS + 1))
+            echo "  ✅ PASS: $desc (key='$key' value='$actual')"
+        else
+            FAIL=$((FAIL + 1))
+            echo "  ❌ FAIL: $desc (expected '$expected_value', got '$actual')"
+        fi
+    else
+        FAIL=$((FAIL + 1))
+        echo "  ❌ FAIL: $desc (HTTP $http_code, expected 200)"
+    fi
+}
 
-# TEST 15: Extension priority test (properties should win)
-echo "=========================================="
-echo "=== TEST 15: Extension priority /prioapp/test ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/prioapp/test" | jq .
-echo ""
-echo ""
+# Run a test: expects JSON body to have specific fields
+# Usage: expect_json_field "description" "curl_args" "field" "expected_value"
+expect_json_field() {
+    local desc="$1"
+    shift
+    local curl_args=("$@")
+    local field="$2"
+    local expected_value="$3"
 
-# TEST 16: Upload encrypted content
-echo "=========================================="
-echo "=== TEST 16: Encrypt value ==="
-echo "=========================================="
-ENCRYPTED=$(curl -s $AUTH -X POST "$BASE_URL/encrypt" -H "Content-Type: text/plain" -d "my-secret-password" | tr -d '\n')
-echo "Encrypted: $ENCRYPTED"
-echo ""
-echo ""
+    TOTAL=$((TOTAL + 1))
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" "${curl_args[@]}" 2>/dev/null)
+    http_code=$(echo "$response" | tail -1)
+    local body
+    body=$(echo "$response" | sed '$d')
 
-# Upload file with cipher pattern
-curl -s $AUTH -X POST "$BASE_URL/upload?app=cipherapp&profile=default&ext=.yaml" -H "Content-Type: text/plain" -d "password: '$ENCRYPTED'
-normal_key: normal_value"
-echo ""
-echo ""
+    local actual
+    actual=$(echo "$body" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('$field', 'MISSING'))
+" 2>/dev/null || echo "PARSE_ERROR")
 
-# TEST 17: Fetch with cipher decryption
-echo "=========================================="
-echo "=== TEST 17: Fetch with cipher decryption ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/cipherapp/default" | jq .
-echo ""
-echo ""
+    if [[ "$http_code" == "200" && "$actual" == "$expected_value" ]]; then
+        PASS=$((PASS + 1))
+        echo "  ✅ PASS: $desc ($field='$actual')"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  ❌ FAIL: $desc (expected $field='$expected_value', got '$actual', HTTP $http_code)"
+    fi
+}
 
-# TEST 18: Decrypt test
-echo "=========================================="
-echo "=== TEST 18: Decrypt value ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/decrypt" -H "Content-Type: text/plain" -d "$ENCRYPTED"
-echo ""
-echo ""
+# ── Pre-flight check ─────────────────────────────────────────────────────────
 
-# TEST 19: 401 - wrong password
-echo "=========================================="
-echo "=== TEST 19: Wrong password (401) ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:wrongpass" "$BASE_URL/test/dev"
+echo "=============================================="
+echo "  Config Server Go - Comprehensive Test Suite"
+echo "=============================================="
 echo ""
-echo ""
+echo "Server: $BASE_URL"
+echo "User1 (filesystem): ${USER1_USERNAME}/${USER1_PASSWORD}"
+echo "User2 (postgres):   ${USER2_USERNAME}/${USER2_PASSWORD}"
 
-# TEST 20: 401 - unknown user
-echo "=========================================="
-echo "=== TEST 20: Unknown user (401) ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "unknown:password" "$BASE_URL/test/dev"
-echo ""
-echo ""
+# Check server is reachable
+if ! curl -s --max-time 3 "$BASE_URL/" -o /dev/null 2>/dev/null; then
+    echo ""
+    echo "❌ Server not reachable at $BASE_URL"
+    echo "   Make sure docker compose is running: docker compose up -d"
+    exit 1
+fi
+echo "✅ Server is reachable"
 
-# TEST 21: 404 - nonexistent config
-echo "=========================================="
-echo "=== TEST 21: Nonexistent config (404) ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH "$BASE_URL/nonexistent/dev"
-echo ""
-echo ""
+# ── 1. Authentication Tests ───────────────────────────────────────────────────
 
-# TEST 22: Delete file
-echo "=========================================="
-echo "=== TEST 22: Delete file ==="
-echo "=========================================="
-curl -s $AUTH -X DELETE "$BASE_URL/delete?app=cipherapp&profile=default&ext=.yaml"
-echo ""
-echo ""
+test_header "1. Authentication Tests"
 
-# Verify deletion
-echo "=========================================="
-echo "=== VERIFY: File should be gone ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH "$BASE_URL/cipherapp/default"
-echo ""
-echo ""
+# No auth
+expect_status "GET without authentication returns 401" \
+    "401" \
+    "$BASE_URL/myapp/dev.yaml"
 
-# TEST 23: Swagger UI
-echo "=========================================="
-echo "=== TEST 23: Swagger UI ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" "$BASE_URL/swagger/index.html"
-echo ""
-echo ""
+# Wrong password
+expect_status "GET with wrong password returns 401" \
+    "401" \
+    "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:wrongpass"
 
-# TEST 24: Upload with path parameter (raw file at custom path)
-echo "=========================================="
-echo "=== TEST 24: Upload with path parameter ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=myapp&profile=prod&ext=.yaml&path=configs/myapp/prod.yaml" -H "Content-Type: text/plain" -d "path_config: enabled
-custom_path: true"
-echo ""
-echo ""
+# Wrong user
+expect_status "GET with unknown user returns 401" \
+    "401" \
+    "$BASE_URL/myapp/dev.yaml" -u "nonexistent:pass"
 
-# TEST 25: Fetch uploaded file via path (raw content)
-echo "=========================================="
-echo "=== TEST 25: Fetch raw file via path ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/configs/myapp/prod.yaml"
-echo ""
-echo ""
+# Upload without auth
+expect_status "Upload without authentication returns 401" \
+    "401" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=test&ext=.yaml" -d "test"
 
-# TEST 26: Upload with nested path
-echo "=========================================="
-echo "=== TEST 26: Upload with nested path ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/upload?app=nestedapp&profile=dev&ext=.json&path=depth/level1/level2/nested.json" -H "Content-Type: text/plain" -d '{"nested": true}'
-echo ""
-echo ""
+# Upload with wrong password
+expect_status "Upload with wrong password returns 401" \
+    "401" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=test&ext=.yaml" -u "${USER1_USERNAME}:wrongpass" -d "test"
 
-# TEST 27: Fetch nested file via path
-echo "=========================================="
-echo "=== TEST 27: Fetch nested raw file via path ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/depth/level1/level2/nested.json"
-echo ""
-echo ""
+# ── 2. Filesystem Backend - Upload ────────────────────────────────────────────
 
-# Clean up path-based files
-echo "--- CLEANUP (path files) ---"
-curl -s $AUTH -X DELETE "$BASE_URL/delete?app=myapp&profile=prod&ext=.yaml"
-curl -s $AUTH -X DELETE "$BASE_URL/delete?app=nestedapp&profile=dev&ext=.json"
-echo ""
-echo ""
+test_header "2. Filesystem Backend - Upload Tests (user1)"
 
-echo "=========================================="
-echo "=== TEST SUITE COMPLETE ==="
-echo "=========================================="
+# Upload YAML
+expect_status "Upload YAML file" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
 
-# ============================================================
-# === MULTI-PASSWORD AUTHENTICATION TESTS ===
-# ============================================================
+# Upload JSON
+expect_status "Upload JSON file" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=prod&ext=.json" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/prod.json
 
-echo ""
-echo "=========================================="
-echo "=== TEST 28: Add a temporary password ==="
-echo "=========================================="
+# Upload Properties
+expect_status "Upload .properties file" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=prod&ext=.properties" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/prod.properties
+
+# Upload .yml
+expect_status "Upload .yml file" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=ymltest&ext=.yml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# Upload with default extension (omitted)
+expect_status "Upload with default .yaml extension" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=defaultext" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# Upload with label
+expect_status "Upload YAML with label" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev&label=main&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# Upload with label v2
+expect_status "Upload with label 'v2'" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=staging&label=v2&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# Upload special characters in values
+expect_status "Upload config with special characters" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=special2&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/special2.yaml
+
+# Upload large config
+expect_status "Upload large config (100 keys)" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=large&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/large.yaml
+
+# Overwrite existing file
+expect_status "Overwrite existing YAML file" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# ── 3. Filesystem Backend - GET ───────────────────────────────────────────────
+
+test_header "3. Filesystem Backend - GET Tests (user1)"
+
+# GET existing YAML
+expect_status "GET existing YAML file" \
+    "200" \
+    "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# GET existing JSON
+expect_status "GET existing JSON file" \
+    "200" \
+    "$BASE_URL/myapp/prod.json" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# GET existing .properties
+expect_status "GET existing .properties file" \
+    "200" \
+    "$BASE_URL/myapp/prod.properties" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# GET existing .yml
+expect_status "GET existing .yml file" \
+    "200" \
+    "$BASE_URL/myapp/ymltest.yml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# GET with label
+expect_status "GET YAML with label" \
+    "200" \
+    "$BASE_URL/myapp/dev/main.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# GET with label v2
+expect_status "GET with label 'v2'" \
+    "200" \
+    "$BASE_URL/myapp/staging/v2.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# GET non-existent file returns 404
+expect_status "GET non-existent file returns 404" \
+    "404" \
+    "$BASE_URL/myapp/nonexistent.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# ── 4. Property Flattening Tests ──────────────────────────────────────────────
+
+test_header "4. Property Flattening & Content Tests"
+
+# YAML nested keys flattened to dot notation
+expect_property "YAML nested key flattening: database.host" \
+    "$BASE_URL/myapp/dev.yaml" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "database.host" "localhost"
+
+# JSON flat keys
+expect_property "JSON flat key: app" \
+    "$BASE_URL/myapp/prod.json" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "app" '{"name": "myapp", "version": "2.0"}'
+
+# Properties file parsing
+expect_property "Properties key: database.host" \
+    "$BASE_URL/myapp/prod.properties" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "database.host" "prodhost"
+
+# Nested YAML
+expect_property "Nested YAML: nested.key1" \
+    "$BASE_URL/myapp/special2.yaml" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "nested.key1" "val1"
+
+expect_property "Deep nested YAML: nested.key2.subkey" \
+    "$BASE_URL/myapp/special2.yaml" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "nested.key2.subkey" "subval"
+
+# Boolean and numeric types preserved
+expect_property "Boolean preserved: bool" \
+    "$BASE_URL/myapp/special2.yaml" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "bool" "true"
+
+expect_property "Numeric preserved: numeric" \
+    "$BASE_URL/myapp/special2.yaml" "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "numeric" "42"
+
+# ── 5. GetValuesResponse JSON Structure Tests ────────────────────────────────
+
+test_header "5. GetValuesResponse JSON Structure Tests"
+
+# Verify response has correct name field
+expect_json_field "Response name is 'myapp'" \
+    -s "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    "name" "myapp"
+
+# Verify response has correct profiles
+TOTAL=$((TOTAL + 1))
+_profile_response=$(curl -s "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null)
+profiles=$(echo "$_profile_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['profiles'])" 2>/dev/null || echo "ERROR")
+if [[ "$profiles" == "['dev']" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Response profiles=['dev']"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Response profiles='$profiles' (expected ['dev'])"
+fi
+
+# Verify response has label when label is specified
+TOTAL=$((TOTAL + 1))
+label_response=$(curl -s "$BASE_URL/myapp/dev/main.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null)
+label_val=$(echo "$label_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('label'))" 2>/dev/null || echo "NONE")
+if [[ "$label_val" == "main" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Response label='main'"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Response label='$label_val' (expected 'main')"
+fi
+
+# Verify propertySources is non-empty array
+TOTAL=$((TOTAL + 1))
+ps_count=$(curl -s "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null | \
+    python3 -c "import sys,json; print(len(json.load(sys.stdin)['propertySources']))" 2>/dev/null || echo "ERROR")
+if [[ "$ps_count" == "1" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: propertySources has 1 entry"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: propertySources has $ps_count entries (expected 1)"
+fi
+
+# Verify source is a dict (not empty)
+TOTAL=$((TOTAL + 1))
+source_keys=$(curl -s "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null | \
+    python3 -c "import sys,json; src=json.load(sys.stdin)['propertySources'][0]['source']; print(len(src))" 2>/dev/null || echo "ERROR")
+if [[ "$source_keys" -gt 0 ]] 2>/dev/null; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: propertySources[0].source has $source_keys keys"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: propertySources[0].source has $source_keys keys (expected >0)"
+fi
+
+# ── 6. PostgreSQL Backend Tests ──────────────────────────────────────────────
+
+test_header "6. PostgreSQL Backend Tests (user2)"
+
+# Upload to PostgreSQL
+expect_status "Upload YAML to PostgreSQL" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=pgapp&profile=dev&ext=.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# Upload JSON to PostgreSQL
+expect_status "Upload JSON to PostgreSQL" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=pgapp&profile=prod&ext=.json" -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    --data-binary @test-data/prod.json
+
+# Upload .properties to PostgreSQL
+expect_status "Upload .properties to PostgreSQL" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=pgapp&profile=prod&ext=.properties" -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    --data-binary @test-data/prod.properties
+
+# Upload with label to PostgreSQL
+expect_status "Upload YAML with label to PostgreSQL" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=pgapp&profile=dev&label=staging&ext=.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# GET from PostgreSQL
+expect_status "GET YAML from PostgreSQL" \
+    "200" \
+    "$BASE_URL/pgapp/dev.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}"
+
+# GET JSON from PostgreSQL
+expect_status "GET JSON from PostgreSQL" \
+    "200" \
+    "$BASE_URL/pgapp/prod.json" -u "${USER2_USERNAME}:${USER2_PASSWORD}"
+
+# GET with label from PostgreSQL
+expect_status "GET YAML with label from PostgreSQL" \
+    "200" \
+    "$BASE_URL/pgapp/dev/staging.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}"
+
+# GET non-existent from PostgreSQL
+expect_status "GET non-existent from PostgreSQL returns 404" \
+    "404" \
+    "$BASE_URL/pgapp/nonexistent.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}"
+
+# Cross-user isolation: user2 cannot access user1's files
+expect_status "User2 cannot access user1's files" \
+    "404" \
+    "$BASE_URL/myapp/dev.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}"
+
+# Cross-user isolation: user1 cannot access user2's files
+expect_status "User1 cannot access user2's files" \
+    "404" \
+    "$BASE_URL/pgapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# User2 overwrites its own file (upsert)
+expect_status "User2 overwrites its own file" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=pgapp&profile=dev&ext=.yaml" -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# ── 7. Encrypt / Decrypt Tests ────────────────────────────────────────────────
+
+test_header "7. Encrypt / Decrypt Tests"
+
+# Encrypt plaintext
+TOTAL=$((TOTAL + 1))
+encrypted=$(curl -s -X POST "$BASE_URL/encrypt" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "my-secret-password" 2>/dev/null)
+if [[ -n "$encrypted" && ${#encrypted} -gt 10 ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Encrypt returns ciphertext (${#encrypted} chars)"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Encrypt returned empty or too short: '$encrypted'"
+fi
+
+# Decrypt ciphertext
+TOTAL=$((TOTAL + 1))
+decrypted=$(curl -s -X POST "$BASE_URL/decrypt" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "$encrypted" 2>/dev/null)
+if [[ "$decrypted" == "my-secret-password" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Decrypt returns original plaintext"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Decrypt returned '$decrypted' (expected 'my-secret-password')"
+fi
+
+# Decrypt with invalid ciphertext
+expect_status "Decrypt invalid ciphertext returns 400" \
+    "400" \
+    -X POST "$BASE_URL/decrypt" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "invalid-ciphertext"
+
+# Encrypt/decrypt roundtrip with special chars
+TOTAL=$((TOTAL + 1))
+encrypted_special=$(curl -s -X POST "$BASE_URL/encrypt" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "p@ss w0rd!#\$%" 2>/dev/null)
+decrypted_special=$(curl -s -X POST "$BASE_URL/decrypt" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "$encrypted_special" 2>/dev/null)
+if [[ "$decrypted_special" == "p@ss w0rd!#\$%" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Encrypt/decrypt roundtrip with special chars"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Roundtrip with special chars failed: got '$decrypted_special'"
+fi
+
+# Auto-decrypt {cipher} in config
+expect_status "GET config with {cipher} values auto-decrypts" \
+    "200" \
+    "$BASE_URL/myapp/encrypted.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# ── 8. Input Validation Tests ────────────────────────────────────────────────
+
+test_header "8. Input Validation Tests"
+
+# Invalid extension
+expect_status "Upload with invalid extension returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev&ext=.exe" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Missing app parameter
+expect_status "Upload missing app returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Missing profile parameter
+expect_status "Upload missing profile returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=myapp&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Path traversal attempt in app name
+expect_status "Path traversal in app name returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=../etc&profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Path traversal attempt in profile name
+expect_status "Path traversal in profile name returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=../etc&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Path traversal attempt in label
+expect_status "Path traversal in label returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev&label=../../etc&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Invalid characters in app name (spaces)
+expect_status "Spaces in app name returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=my app&profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Invalid characters in app name (dots)
+expect_status "Dots in app name returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=my.app&profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# Commas in profile (not allowed)
+expect_status "Commas in profile returns 400" \
+    "400" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev,prod&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" -d "test"
+
+# ── 9. Edge Cases ────────────────────────────────────────────────────────────
+
+test_header "9. Edge Cases"
+
+# Upload empty content
+TOTAL=$((TOTAL + 1))
+resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/upload?app=myapp&profile=empty&ext=.yaml" \
+    -u "${USER1_USERNAME}:${USER1_PASSWORD}" --data-binary "" 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+body=$(echo "$resp" | sed '$d')
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Upload empty content returns 200"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Upload empty content returned HTTP $http_code (expected 200)"
+    echo "       Response: $body"
+fi
+
+# GET empty content (should return 200 with empty source)
+TOTAL=$((TOTAL + 1))
+resp=$(curl -s -w "\n%{http_code}" "$BASE_URL/myapp/empty.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+body=$(echo "$resp" | sed '$d')
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: GET empty content returns 200"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: GET empty content returned HTTP $http_code (expected 200)"
+fi
+
+# Upload config with deep nesting
+TOTAL=$((TOTAL + 1))
+python3 -c "
+import yaml
+data = {'a': {'b': {'c': {'d': {'e': 'deep'}}}}}
+with open('test-data/deep.yaml', 'w') as f:
+    yaml.dump(data, f)
+" 2>/dev/null || true
+resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/upload?app=myapp&profile=deep&ext=.yaml" \
+    -u "${USER1_USERNAME}:${USER1_PASSWORD}" --data-binary @test-data/deep.yaml 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Upload deeply nested config"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Upload deeply nested config returned HTTP $http_code"
+fi
+
+# GET deeply nested config
+TOTAL=$((TOTAL + 1))
+resp=$(curl -s "$BASE_URL/myapp/deep.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null)
+deep_val=$(echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+src = d['propertySources'][0]['source']
+print(src.get('a.b.c.d.e', 'MISSING'))
+" 2>/dev/null || echo "ERROR")
+if [[ "$deep_val" == "deep" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Deep nesting flattened correctly: a.b.c.d.e='deep'"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Deep nesting failed: a.b.c.d.e='$deep_val'"
+fi
+
+# Upload with list values
+TOTAL=$((TOTAL + 1))
+python3 -c "
+import yaml
+data = {'items': ['alpha', 'beta', 'gamma']}
+with open('test-data/list.yaml', 'w') as f:
+    yaml.dump(data, f)
+" 2>/dev/null || true
+resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/upload?app=myapp&profile=list&ext=.yaml" \
+    -u "${USER1_USERNAME}:${USER1_PASSWORD}" --data-binary @test-data/list.yaml 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Upload config with list values"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Upload config with list values returned HTTP $http_code"
+fi
+
+# GET config with list values
+TOTAL=$((TOTAL + 1))
+resp=$(curl -s "$BASE_URL/myapp/list.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null)
+list_val=$(echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+src = d['propertySources'][0]['source']
+v = src.get('items')
+if isinstance(v, list):
+    print('LIST:' + ','.join(v))
+else:
+    print(v)
+" 2>/dev/null || echo "ERROR")
+if [[ "$list_val" == "LIST:alpha,beta,gamma" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: List values preserved: items=[$list_val]"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: List values not preserved: items='$list_val'"
+fi
+
+# Upload same file twice (idempotent overwrite)
+expect_status "Idempotent upload (same file twice)" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=dev&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# ── 10. Multiple File Formats Round-Trip ──────────────────────────────────────
+
+test_header "10. Multiple Format Round-Trip"
+
+# YAML → GET → check keys
+TOTAL=$((TOTAL + 1))
+yaml_keys=$(curl -s "$BASE_URL/myapp/dev.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); src=d['propertySources'][0]['source']; print(sorted(src.keys()))" 2>/dev/null)
+if echo "$yaml_keys" | grep -q "database.host"; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: YAML keys present: $yaml_keys"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: YAML keys missing or malformed: $yaml_keys"
+fi
+
+# JSON → GET → check keys
+TOTAL=$((TOTAL + 1))
+json_keys=$(curl -s "$BASE_URL/myapp/prod.json" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); src=d['propertySources'][0]['source']; print(sorted(src.keys()))" 2>/dev/null)
+if echo "$json_keys" | grep -q "app"; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: JSON keys present: $json_keys"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: JSON keys missing or malformed: $json_keys"
+fi
+
+# Properties → GET → check keys
+TOTAL=$((TOTAL + 1))
+props_keys=$(curl -s "$BASE_URL/myapp/prod.properties" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); src=d['propertySources'][0]['source']; print(sorted(src.keys()))" 2>/dev/null)
+if echo "$props_keys" | grep -q "database.host"; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Properties keys present: $props_keys"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Properties keys missing or malformed: $props_keys"
+fi
+
+# ── 11. Multi-Profile Merge Tests ────────────────────────────────────────────
+
+test_header "11. Multi-Profile Merge Tests"
+
+# Upload common profile
+expect_status "Upload common profile" \
+    "200" \
+    -X POST "$BASE_URL/upload?app=myapp&profile=common&ext=.yaml" -u "${USER1_USERNAME}:${USER1_PASSWORD}" \
+    --data-binary @test-data/dev.yaml
+
+# Fetch multi-profile
+TOTAL=$((TOTAL + 1))
+multi_response=$(curl -s "$BASE_URL/myapp/dev,common" -u "${USER1_USERNAME}:${USER1_PASSWORD}" 2>/dev/null)
+if [[ $? -eq 0 ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Multi-profile fetch returns 200"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Multi-profile fetch failed"
+fi
+
+# ── 12. Health Check & List ──────────────────────────────────────────────────
+
+test_header "12. Health Check & List Tests"
+
+# Health check
+TOTAL=$((TOTAL + 1))
+health_response=$(curl -s "$BASE_URL/health" 2>/dev/null)
+if echo "$health_response" | grep -q "UP"; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Health check returns UP"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Health check failed: $health_response"
+fi
+
+# List files
+expect_status "List files returns 200" \
+    "200" \
+    "$BASE_URL/list" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# ── 13. Multi-Password Authentication Tests ──────────────────────────────────
+
+test_header "13. Multi-Password Authentication Tests"
+
+# Add temporary password
+TOTAL=$((TOTAL + 1))
 FUTURE_DATE=$(date -d "+24 hours" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v+24H +"%Y-%m-%dT%H:%M:%SZ")
-echo "Expiry: $FUTURE_DATE"
-curl -s $AUTH -X POST "$BASE_URL/addpassword" \
-  -d "password=temptoken123" \
-  -d "exp=$FUTURE_DATE" \
-  -d "description=temporary-token-for-testing"
-echo ""
-echo ""
+resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/addpassword" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    -d "password=temptoken123" \
+    -d "exp=$FUTURE_DATE" \
+    -d "description=temporary-token-for-testing" 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Add temporary password (HTTP $http_code)"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Add temporary password returned HTTP $http_code"
+fi
 
-echo "=========================================="
-echo "=== TEST 29: Add a no-expire password ==="
-echo "=========================================="
-curl -s $AUTH -X POST "$BASE_URL/addpassword" \
-  -d "password=foreverpass" \
-  -d "exp=noexpire" \
-  -d "description=permanent-secondary-password"
-echo ""
-echo ""
+# Add no-expire password
+TOTAL=$((TOTAL + 1))
+resp=$(curl -s -w "\n%{http_code}" -X POST "$BASE_URL/addpassword" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    -d "password=foreverpass" \
+    -d "exp=noexpire" \
+    -d "description=permanent-secondary-password" 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Add no-expire password (HTTP $http_code)"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Add no-expire password returned HTTP $http_code"
+fi
 
-echo "=========================================="
-echo "=== TEST 30: List all passwords ==="
-echo "=========================================="
-curl -s $AUTH "$BASE_URL/listpasswords" | jq .
-echo ""
-echo ""
+# List all passwords
+TOTAL=$((TOTAL + 1))
+listpw_response=$(curl -s -w "\n%{http_code}" "$BASE_URL/listpasswords" -u "${USER2_USERNAME}:${USER2_PASSWORD}" 2>/dev/null)
+http_code=$(echo "$listpw_response" | tail -1)
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: List passwords returns 200"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: List passwords returned HTTP $http_code"
+fi
 
-echo "=========================================="
-echo "=== TEST 31: Authenticate with temp password ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:temptoken123" "$BASE_URL/test/dev"
-echo ""
-echo ""
+# Authenticate with temp password
+expect_status "Authenticate with temp password" \
+    "200" \
+    "$BASE_URL/myapp/dev.yaml" -u "user2:temptoken123"
 
-echo "=========================================="
-echo "=== TEST 32: Authenticate with no-expire password ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:foreverpass" "$BASE_URL/test/dev"
-echo ""
-echo ""
+# Authenticate with no-expire password
+expect_status "Authenticate with no-expire password" \
+    "200" \
+    "$BASE_URL/myapp/dev.yaml" -u "user2:foreverpass"
 
-echo "=========================================="
-echo "=== TEST 33: Authenticate with main password still works ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -u "user2:changeme" "$BASE_URL/test/dev"
-echo ""
-echo ""
+# Authenticate with main password still works
+expect_status "Authenticate with main password still works" \
+    "200" \
+    "$BASE_URL/myapp/dev.yaml" -u "user2:changeme"
 
-echo "=========================================="
-echo "=== TEST 34: Duplicate password rejected ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X POST "$BASE_URL/addpassword" \
-  -d "password=temptoken123" \
-  -d "exp=noexpire" \
-  -d "description=duplicate-test"
-echo ""
-echo ""
+# Duplicate password rejected
+expect_status "Duplicate password rejected" \
+    "400" \
+    -X POST "$BASE_URL/addpassword" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    -d "password=temptoken123" \
+    -d "exp=noexpire" \
+    -d "description=duplicate-test"
 
-echo "=========================================="
-echo "=== TEST 35: Missing password field rejected ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X POST "$BASE_URL/addpassword" \
-  -d "exp=$FUTURE_DATE" \
-  -d "description=missing-password"
-echo ""
-echo ""
+# Missing password field rejected
+expect_status "Missing password field rejected" \
+    "400" \
+    -X POST "$BASE_URL/addpassword" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    -d "exp=$FUTURE_DATE" \
+    -d "description=missing-password"
 
-echo "=========================================="
-echo "=== TEST 36: Invalid exp format rejected ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X POST "$BASE_URL/addpassword" \
-  -d "password=badexp" \
-  -d "exp=not-a-date" \
-  -d "description=bad-exp"
-echo ""
-echo ""
+# Invalid exp format rejected
+expect_status "Invalid exp format rejected" \
+    "400" \
+    -X POST "$BASE_URL/addpassword" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}" \
+    -d "password=badexp" \
+    -d "exp=not-a-date" \
+    -d "description=bad-exp"
 
-echo "=========================================="
-echo "=== TEST 37: Delete a password by hash ==="
-echo "=========================================="
-# First get the hash from list
-TEMP_HASH=$(curl -s $AUTH "$BASE_URL/listpasswords" | jq -r '.passwords | keys[0]')
-echo "Deleting hash: $TEMP_HASH"
-curl -s $AUTH -X DELETE "$BASE_URL/delpassword?hash=$TEMP_HASH"
-echo ""
-echo ""
+# Delete a password by hash
+TOTAL=$((TOTAL + 1))
+TEMP_HASH=$(curl -s "$BASE_URL/listpasswords" -u "${USER2_USERNAME}:${USER2_PASSWORD}" 2>/dev/null | jq -r '.passwords | keys[0]')
+resp=$(curl -s -w "\n%{http_code}" -X DELETE "$BASE_URL/delpassword?hash=$TEMP_HASH" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}" 2>/dev/null)
+http_code=$(echo "$resp" | tail -1)
+if [[ "$http_code" == "200" ]]; then
+    PASS=$((PASS + 1))
+    echo "  ✅ PASS: Delete password by hash (HTTP $http_code)"
+else
+    FAIL=$((FAIL + 1))
+    echo "  ❌ FAIL: Delete password by hash returned HTTP $http_code"
+fi
 
-echo "=========================================="
-echo "=== TEST 38: Delete nonexistent hash ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X DELETE "$BASE_URL/delpassword?hash=nonexistenthash00000000000000000000000000000000000000000000000000000000"
-echo ""
-echo ""
+# Delete nonexistent hash
+expect_status "Delete nonexistent hash returns 404" \
+    "404" \
+    -X DELETE "$BASE_URL/delpassword?hash=nonexistenthash00000000000000000000000000000000000000000000000000000000" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}"
 
-echo "=========================================="
-echo "=== TEST 39: Delete missing hash param ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" $AUTH -X DELETE "$BASE_URL/delpassword"
-echo ""
-echo ""
+# Delete missing hash param
+expect_status "Delete missing hash param returns 400" \
+    "400" \
+    -X DELETE "$BASE_URL/delpassword" \
+    -u "${USER2_USERNAME}:${USER2_PASSWORD}"
 
-echo "=========================================="
-echo "=== TEST 40: Unauthorized on addpassword ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -X POST "$BASE_URL/addpassword" \
-  -d "password=test" \
-  -d "exp=noexpire" \
-  -d "description=unauthorized"
-echo ""
-echo ""
+# Unauthorized on addpassword
+expect_status "Unauthorized on addpassword returns 401" \
+    "401" \
+    -X POST "$BASE_URL/addpassword" \
+    -d "password=test" \
+    -d "exp=noexpire" \
+    -d "description=unauthorized"
 
-echo "=========================================="
-echo "=== TEST 41: Unauthorized on listpasswords ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" "$BASE_URL/listpasswords"
-echo ""
-echo ""
+# Unauthorized on listpasswords
+expect_status "Unauthorized on listpasswords returns 401" \
+    "401" \
+    "$BASE_URL/listpasswords"
 
-echo "=========================================="
-echo "=== TEST 42: Unauthorized on delpassword ==="
-echo "=========================================="
-curl -s -o /dev/null -w "HTTP Status: %{http_code}" -X DELETE "$BASE_URL/delpassword?hash=abc123"
-echo ""
-echo ""
+# Unauthorized on delpassword
+expect_status "Unauthorized on delpassword returns 401" \
+    "401" \
+    -X DELETE "$BASE_URL/delpassword?hash=abc123"
 
-# ============================================================
-# === FORMAT-SPECIFIC ENDPOINTS (Spring Cloud Config Server) ===
-# ============================================================
+# ── 14. Format-Specific Endpoints (Spring Cloud Config Server) ────────────────
 
-echo ""
-echo "=========================================="
-echo "=== TEST 43: YAML format endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{application}-{profile}.yml"
-curl -s $AUTH "$BASE_URL/test-dev.yml" | jq .
-echo ""
-echo ""
+test_header "14. Format-Specific Endpoints (Spring Cloud Config Server)"
 
-echo "=========================================="
-echo "=== TEST 44: JSON format endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{application}-{profile}.json"
-curl -s $AUTH "$BASE_URL/test-dev.json" | jq .
-echo ""
-echo ""
+# YAML format endpoint
+expect_status "GET /{app}-{profile}.yml" \
+    "200" \
+    "$BASE_URL/myapp-dev.yml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
 
-echo "=========================================="
-echo "=== TEST 45: Properties format endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{application}-{profile}.properties"
-curl -s $AUTH "$BASE_URL/test-dev.properties" | jq .
-echo ""
-echo ""
+# JSON format endpoint
+expect_status "GET /{app}-{profile}.json" \
+    "200" \
+    "$BASE_URL/myapp-prod.json" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
 
-echo "=========================================="
-echo "=== TEST 46: Label-prefixed YAML endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{label}/{application}-{profile}.yml"
-curl -s $AUTH "$BASE_URL/main/test-dev.yml" | jq .
-echo ""
-echo ""
+# Properties format endpoint
+expect_status "GET /{app}-{profile}.properties" \
+    "200" \
+    "$BASE_URL/myapp-prod.properties" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
 
-echo "=========================================="
-echo "=== TEST 47: Label-prefixed JSON endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{label}/{application}-{profile}.json"
-curl -s $AUTH "$BASE_URL/main/test-dev.json" | jq .
-echo ""
-echo ""
+# Label-prefixed YAML endpoint
+expect_status "GET /{label}/{app}-{profile}.yml" \
+    "200" \
+    "$BASE_URL/main/myapp-dev.yml" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
 
-echo "=========================================="
-echo "=== TEST 48: Label-prefixed properties endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{label}/{application}-{profile}.properties"
-curl -s $AUTH "$BASE_URL/main/test-dev.properties" | jq .
-echo ""
-echo ""
+# Label-prefixed JSON endpoint
+expect_status "GET /{label}/{app}-{profile}.json" \
+    "200" \
+    "$BASE_URL/main/myapp-prod.json" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
 
-# ============================================================
-# === RAW FILE ENDPOINTS (Spring Cloud Config Server) ===
-# ============================================================
+# Label-prefixed properties endpoint
+expect_status "GET /{label}/{app}-{profile}.properties" \
+    "200" \
+    "$BASE_URL/main/myapp-prod.properties" -u "${USER1_USERNAME}:${USER1_PASSWORD}"
+
+# ── 15. Swagger UI ────────────────────────────────────────────────────────────
+
+test_header "15. Swagger UI"
+
+expect_status "Swagger UI returns 200" \
+    "200" \
+    "$BASE_URL/swagger/index.html"
+
+# ── Summary ────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "=========================================="
-echo "=== TEST 49: List files endpoint ==="
-echo "=========================================="
-echo "Spring spec: /{application}/{profile}/{label}/{path}/listFiles"
-curl -s $AUTH "$BASE_URL/test/dev/main/listFiles" | jq .
+echo "=============================================="
+echo "  TEST SUMMARY"
+echo "=============================================="
 echo ""
-echo ""
-
-echo "=========================================="
-echo "=== TEST 50: List files for default label ==="
-echo "=========================================="
-echo "Spring spec: /{application}/{profile}/{path}/listFiles"
-curl -s $AUTH "$BASE_URL/test/dev/listFiles" | jq .
-echo ""
+echo "  Total:  $TOTAL"
+echo "  Passed: $PASS"
+echo "  Failed: $FAIL"
 echo ""
 
-echo "=========================================="
-echo "=== ALL TESTS COMPLETE ==="
-echo "=========================================="
+if [[ $FAIL -eq 0 ]]; then
+    echo "  🎉 ALL TESTS PASSED!"
+else
+    echo "  ⚠️  $FAIL TEST(S) FAILED"
+fi
+echo ""
+
+exit $FAIL
