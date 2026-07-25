@@ -206,15 +206,15 @@ func main() {
 // Handler returns the configured HTTP mux.
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /encrypt", basicAuth(a.encryptHandler))
-	mux.HandleFunc("POST /decrypt", basicAuth(a.decryptHandler))
-	mux.HandleFunc("POST /upload", basicAuth(a.uploadHandler))
-	mux.HandleFunc("DELETE /delete", basicAuth(a.deleteHandler))
-	mux.HandleFunc("GET /list", basicAuth(a.listHandler))
+	mux.HandleFunc("POST /encrypt", a.basicAuth(a.encryptHandler))
+	mux.HandleFunc("POST /decrypt", a.basicAuth(a.decryptHandler))
+	mux.HandleFunc("POST /upload", a.basicAuth(a.uploadHandler))
+	mux.HandleFunc("DELETE /delete", a.basicAuth(a.deleteHandler))
+	mux.HandleFunc("GET /list", a.basicAuth(a.listHandler))
 	// Multi-password management — authenticated endpoints.
-	mux.HandleFunc("POST /addpassword", basicAuth(a.addPasswordHandler))
-	mux.HandleFunc("GET /listpasswords", basicAuth(a.listPasswordsHandler))
-	mux.HandleFunc("DELETE /delpassword", basicAuth(a.delPasswordHandler))
+	mux.HandleFunc("POST /addpassword", a.basicAuth(a.addPasswordHandler))
+	mux.HandleFunc("GET /listpasswords", a.basicAuth(a.listPasswordsHandler))
+	mux.HandleFunc("DELETE /delpassword", a.basicAuth(a.delPasswordHandler))
 	mux.HandleFunc("GET /health", a.healthHandler)
 	// Swagger UI
 	mux.Handle("GET /swagger/{path...}", httpSwagger.Handler(
@@ -227,7 +227,7 @@ func (a *App) Handler() http.Handler {
 	if a.PathServing.Enabled {
 		mux.HandleFunc("GET "+a.PathServing.Prefix+"/", a.pathServingHandler)
 	}
-	mux.HandleFunc("GET /", basicAuth(a.getValuesHandler))
+	mux.HandleFunc("GET /", a.basicAuth(a.getValuesHandler))
 	return mux
 }
 
@@ -304,7 +304,7 @@ func processCipherPatterns(content string, user *UserConfig) string {
 // hex digest of the supplied password and looks it up in the Passwords map.
 // Expired passwords are rejected. The authenticated username is stored in
 // the X-Username request header so downstream handlers can identify the user.
-func basicAuth(next http.HandlerFunc) http.HandlerFunc {
+func (a *App) basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
 		if !ok {
@@ -312,7 +312,7 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		user, exists := users[username]
+		user, exists := a.Users[username]
 		if !exists {
 			w.Header().Set("WWW-Authenticate", `Basic realm="ConfigServer Auth"`)
 			fmt.Fprintf(os.Stderr, "User '%s' does not exists\n", username)
@@ -362,6 +362,28 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // migrateDB runs the CREATE TABLE IF NOT EXISTS migration for the postgres
 // backend. Safe to call repeatedly — it is idempotent.
+// cleanupExpiredPasswords removes expired passwords from the user's Passwords map.
+// This should be called periodically or on each request to keep the map clean.
+func cleanupExpiredPasswords(user *UserConfig) {
+	if len(user.Passwords) == 0 {
+		return
+	}
+	for hash, meta := range user.Passwords {
+		if meta.Exp == "" || meta.Exp == "noexpire" {
+			continue
+		}
+		// Skip if the expiry date is in the future
+		if meta.Exp != "noexpire" {
+			expTime, err := time.Parse("2006-01-02", meta.Exp)
+			if err != nil {
+				continue // Skip malformed expiry
+			}
+			if time.Now().After(expTime) {
+				delete(user.Passwords, hash)
+			}
+		}
+	}
+}
 func migrateDB(dsn string) error {
 	if dsn == "" {
 		return fmt.Errorf("no postgres DSN configured — cannot run migrations")
@@ -417,6 +439,19 @@ func migrateDB(dsn string) error {
 // @Security BasicAuth
 func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 	user := a.Users[r.Header.Get("X-Username")]
+	if user == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Unauthorized",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Clean up expired passwords from the Passwords map.
+	cleanupExpiredPasswords(user)
+
 	be, err := a.Backend.ForUser(user)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("backend error: %s", err), http.StatusBadGateway)
@@ -834,6 +869,18 @@ func (a *App) fetchPropertySource(be backend.Backend, user *UserConfig, app, pro
 // @Security BasicAuth
 func (a *App) encryptHandler(w http.ResponseWriter, r *http.Request) {
 	user := a.Users[r.Header.Get("X-Username")]
+	if user == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Unauthorized",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Clean up expired passwords from the Passwords map.
+	cleanupExpiredPasswords(user)
 
 	content, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -871,6 +918,19 @@ func (a *App) encryptHandler(w http.ResponseWriter, r *http.Request) {
 // @Security BasicAuth
 func (a *App) decryptHandler(w http.ResponseWriter, r *http.Request) {
 	user := a.Users[r.Header.Get("X-Username")]
+	if user == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Unauthorized",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Clean up expired passwords from the Passwords map.
+	cleanupExpiredPasswords(user)
+
 	content, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("[ERROR] %s\n", err.Error())
@@ -1339,6 +1399,19 @@ func (a *App) addPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	desc := r.FormValue("description")
 	username := r.Header.Get("X-Username")
 	user := a.Users[username]
+	if user == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Unauthorized",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Clean up expired passwords from the Passwords map.
+	cleanupExpiredPasswords(user)
+
 	if user.Passwords == nil {
 		user.Passwords = make(map[string]PasswordMeta)
 	}
@@ -1389,6 +1462,18 @@ func (a *App) addPasswordHandler(w http.ResponseWriter, r *http.Request) {
 func (a *App) listPasswordsHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.Header.Get("X-Username")
 	user := a.Users[username]
+	if user == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Unauthorized",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Clean up expired passwords from the Passwords map.
+	cleanupExpiredPasswords(user)
 
 	passwords := make(map[string]map[string]string, len(user.Passwords))
 	for hash, meta := range user.Passwords {
@@ -1436,6 +1521,18 @@ func (a *App) delPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 	username := r.Header.Get("X-Username")
 	user := a.Users[username]
+	if user == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Unauthorized",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	// Clean up expired passwords from the Passwords map.
+	cleanupExpiredPasswords(user)
 
 	if _, exists := user.Passwords[hash]; !exists {
 		w.Header().Set("Content-Type", "application/json")

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -x
 #
 # Comprehensive test suite for config-server-go
 # Covers: filesystem backend, PostgreSQL backend, auth, encrypt/decrypt,
