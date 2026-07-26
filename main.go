@@ -634,32 +634,26 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	case pathsLen > 3:
 		// Multi-segment path: /{app}/{profile}/{label}/{path}
+		// paths[3:] is the raw file path (e.g., paths[3] for simple 4-part, paths[3], paths[4] for deeper)
+		filePath := strings.Join(paths[3:], "/")
 		if acceptsRawContent {
-			// Serve raw config file with label using Spring Cloud Config naming convention
-			app := paths[0]
-			profile := paths[1]
-			label := paths[2]
-			filePath := strings.Join(paths[2:], "/")
-			for _, ext := range lib.SupportedConfigFileType {
-				data, err := be.GetFile(app, profile, label, ext)
-				if backend.IsNotExist(err) {
-					continue
-				}
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(data)
+			// Plain text raw file endpoint: serve ONLY the file at the exact path.
+			// No fallback to config file lookup — if the path doesn't exist, return 404.
+			data, err := be.GetFileByPath(filePath)
+			if backend.IsNotExist(err) {
+				http.Error(w, fmt.Sprintf("File not found: %s", filePath), http.StatusNotFound)
 				return
 			}
-			// If raw config files not found, try literal path
-			serveFile(w, be, filePath)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write(data)
 			return
 		}
 		// Non-raw: multi-segment path: /{app}/{profile}/{label}/{path}
 		// Build the full relative path from everything after app/profile
-		filePath := strings.Join(paths[2:], "/")
 		serveFile(w, be, filePath)
 		return
 	}
@@ -890,6 +884,11 @@ func (a *App) encryptHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"description": "Can not read request body", "status": "INVALID"})
 		return
 	}
+	// Encrypting empty string: no data to encrypt, return empty
+	if len(content) == 0 {
+		w.Write([]byte{})
+		return
+	}
 	output, err := u.Encrypt(string(content), user.EncryptionKey, nil)
 	if err != nil {
 		log.Printf("[ERROR] %s\n", err.Error())
@@ -999,6 +998,16 @@ func (a *App) deleteHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
 			"description": "Missing required parameter: app",
+			"status":      "INVALID",
+		})
+		return
+	}
+
+	if profile == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"description": "Missing required parameter: profile",
 			"status":      "INVALID",
 		})
 		return
