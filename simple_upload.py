@@ -11,11 +11,11 @@ Usage:
 
 .env file contents:
     CONFIG_SERVER_URL=http://localhost:7777
-    USERNAME=user2
-    PASSWORD=changeme
-    PROJECT=myapp
-    PROFILE=common
-    LABEL=
+    CONFIG_SERVER_USERNAME=user2
+    CONFIG_SERVER_PASSWORD=changeme
+    CONFIG_SERVER_PROJECT=myapp
+    CONFIG_SERVER_PROFILE=common
+    CONFIG_SERVER_LABEL=
 """
 
 import sys
@@ -28,8 +28,8 @@ import urllib.parse
 def load_env(env_path=".env"):
     """Load variables from a .env file (simple KEY=VALUE parsing)."""
     if not os.path.isfile(env_path):
-        print(f"Error: {env_path} not found in current directory")
-        sys.exit(1)
+        print(f"[INFO]: {env_path} not found in current directory. Skipping load env")
+        return {}
 
     env_vars = {}
     with open(env_path) as f:
@@ -110,16 +110,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     env = load_env()
-
-    url = env.get("CONFIG_SERVER_URL", "")
-    username = env.get("USERNAME", "")
-    password = env.get("PASSWORD", "")
-    project = env.get("PROJECT", "")
-    profile = env.get("PROFILE", "")
-    label = args.label or env.get("LABEL", "")
+    url = os.getenv("CONFIG_SERVER_URL", env.get("CONFIG_SERVER_URL", ""))
+    username = os.getenv("CONFIG_SERVER_USERNAME", env.get("CONFIG_SERVER_USERNAME", ""))
+    password = os.getenv("CONFIG_SERVER_PASSWORD", env.get("CONFIG_SERVER_PASSWORD", ""))
+    project = os.getenv("CONFIG_SERVER_PROJECT", env.get("CONFIG_SERVER_PROJECT", ""))
+    profile = os.getenv("CONFIG_SERVER_PROFILE", env.get("CONFIG_SERVER_PROFILE", "default"))
+    label = args.label or os.getenv("CONFIG_SERVER_LABEL", env.get("CONFIG_SERVER_LABEL", ""))
 
     if not all([url, username, password, project, profile]):
-        missing = [k for k in ("CONFIG_SERVER_URL", "USERNAME", "PASSWORD", "PROJECT", "PROFILE") if not env.get(k)]
+        missing = [k for k in ("CONFIG_SERVER_URL", "CONFIG_SERVER_USERNAME", "CONFIG_SERVER_PASSWORD", "CONFIG_SERVER_PROJECT", "CONFIG_SERVER_PROFILE") if not env.get(k)]
         print(f"Error: missing required .env variables: {', '.join(missing)}")
         sys.exit(1)
 
@@ -128,3 +127,4 @@ if __name__ == "__main__":
     print(f"Directory: {args.path}")
     print()
     upload_dir(url, username, password, project, profile, args.path, label)
+
