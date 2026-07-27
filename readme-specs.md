@@ -1,5 +1,7 @@
 # Spec Compliance Report
 
+The latest endpoint specs always available here https://note.kaykraft.org/view?id=3409&t=2
+
 **Date:** 2026-07-15
 **Repository:** config-server-go
 

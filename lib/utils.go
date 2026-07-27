@@ -42,11 +42,11 @@ func ParseUploadFilename(filename string) (app, profile, label string) {
 }
 
 // ValidConfigPathSegment validates that a string contains only safe characters
-// for use in config paths (alphanumeric, hyphens, underscores).
+// for use in config paths (alphanumeric, hyphens, underscores, parentheses).
 func ValidConfigPathSegment(s string) bool {
 	for _, c := range s {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '_') {
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '(' || c == ')') {
 			return false
 		}
 	}

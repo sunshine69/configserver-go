@@ -109,6 +109,23 @@ def test_upload_with_label():
     else:
         add_result(test_name, False, f"status={resp.status_code}, body={resp.text[:300]}")
 
+def test_upload_with_special_char_label():
+    """Upload a file with a label containing special characters like parentheses."""
+    test_name = "POST /upload (with special char label)"
+    fpath = os.path.join(TEST_DATA_DIR, "dev.yaml")
+    with open(fpath, "r") as f:
+        content = f.read()
+    
+    # Label with parentheses and hyphens: feature(_)beta-testing
+    special_label = "feature(_)beta-testing"
+    params = {"app": PROJECT, "profile": PROFILE, "label": special_label, "ext": ".yaml", "path": "dev.yaml"}
+    resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
+    
+    if resp.status_code == 200 and "uploaded" in resp.json().get("description", "").lower():
+        add_result(test_name, True)
+    else:
+        add_result(test_name, False, f"status={resp.status_code}, body={resp.text[:300]}")
+
 def test_upload_invalid_ext():
     """Upload a file with unsupported extension."""
     test_name = "POST /upload (invalid ext)"
@@ -172,6 +189,21 @@ def test_get_env_with_label():
         return
     data = resp.json()
     if data.get("name") == PROJECT and data.get("label") == "main" and "propertySources" in data:
+        add_result(test_name, True)
+    else:
+        add_result(test_name, False, f"Response: {data}")
+
+def test_get_env_with_special_char_label():
+    """GET /{app}/{profile}/{label} — with label containing special characters like parentheses."""
+    test_name = "GET /{app}/{profile}/{label} (with special char label)"
+    # Label with parentheses and hyphens: feature(_)beta-testing
+    special_label = "feature(_)beta-testing"
+    resp = requests.get(f"{BASE_URL}/{PROJECT}/{PROFILE}/{special_label}", auth=AUTH)
+    
+    if not assert_status(200, resp, test_name):
+        return
+    data = resp.json()
+    if data.get("name") == PROJECT and data.get("label") == "feature(_)beta-testing" and "propertySources" in data:
         add_result(test_name, True)
     else:
         add_result(test_name, False, f"Response: {data}")
@@ -247,6 +279,19 @@ def test_get_raw_file_not_found():
         add_result(test_name, True)
     else:
         add_result(test_name, False, f"Expected 404, got {resp.status_code}")
+
+def test_get_raw_file_with_special_char_label():
+    """GET /{app}/{profile}/{label}/{path} — serve raw file with label containing special characters."""
+    test_name = "GET /{app}/{profile}/{label}/{path} (raw file with special label)"
+    # Label with parentheses and hyphens: feature(_)beta-testing
+    special_label = "feature(_)beta-testing"
+    resp = requests.get(f"{BASE_URL}/{PROJECT}/default/{special_label}/dev.yaml", auth=AUTH,
+                       headers={"Accept": "application/octet-stream"})
+    
+    if resp.status_code == 200 and "localhost" in resp.text:
+        add_result(test_name, True)
+    else:
+        add_result(test_name, False, f"status={resp.status_code}, body={resp.text[:300]}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TEST: POST /encrypt — Encrypt endpoint
@@ -497,6 +542,7 @@ if __name__ == "__main__":
     # Upload tests
     test_upload_without_label()
     test_upload_with_label()
+    test_upload_with_special_char_label()
     test_upload_invalid_ext()
     test_upload_invalid_app()
     test_upload_missing_app()
@@ -504,6 +550,7 @@ if __name__ == "__main__":
     # JSON Environment endpoint tests
     test_get_env_basic()
     test_get_env_with_label()
+    test_get_env_with_special_char_label()
     test_get_env_file_ext()
     test_get_env_not_found()
     test_get_env_multiple_profiles()
@@ -511,6 +558,7 @@ if __name__ == "__main__":
     # Plain Text / Raw File endpoint tests
     test_get_raw_file_by_path()
     test_get_raw_file_default_label()
+    test_get_raw_file_with_special_char_label()
     test_get_raw_file_not_found()
     
     # Encrypt tests

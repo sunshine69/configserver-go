@@ -453,15 +453,15 @@ func parseAppProfileLabel(base string) (app, profile, label string) {
 }
 
 // validConfigSegment validates that a config parameter contains only
-// alphanumeric characters, hyphens, underscores, and dots. This prevents
-// path traversal attacks and SQL injection.
+// alphanumeric characters, hyphens, underscores, dots, and parentheses.
+// This prevents path traversal attacks and SQL injection.
 func validConfigSegment(s string) bool {
 	if s == "" {
 		return false
 	}
 	for _, c := range s {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '(' || c == ')') {
 			return false
 		}
 	}
