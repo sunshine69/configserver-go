@@ -769,8 +769,6 @@ func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserC
 	}
 
 	allPropertySources := []PropertySource{}
-	foundAny := false
-
 	for _, profile := range profiles {
 		profile, ext := lib.SplitProfileAndExt(profile)
 
@@ -804,14 +802,8 @@ func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserC
 
 			if len(extPropertySources) > 0 {
 				allPropertySources = append(allPropertySources, extPropertySources...)
-				foundAny = true
 			}
 		}
-	}
-
-	if !foundAny {
-		http.Error(w, "Config not found", http.StatusNotFound)
-		return
 	}
 
 	responseObj.PropertySources = append(responseObj.PropertySources, allPropertySources...)

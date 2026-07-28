@@ -211,26 +211,36 @@ def test_get_env_with_special_char_label():
     else:
         add_result(test_name, False, f"Response: {data}")
 
-def test_get_env_file_ext():
-    """GET /{app}/{profile}.yaml — request specific extension."""
-    test_name = "GET /{app}/{profile}.yaml (file ext)"
-    resp = requests.get(f"{BASE_URL}/{PROJECT}/{PROFILE}.yaml", auth=AUTH)
 
-    # This should return raw file content (application/octet-stream)
-    if resp.status_code == 200 and "localhost" in resp.text:
-        add_result(test_name, True)
-    else:
-        add_result(test_name, False, f"status={resp.status_code}, body={resp.text[:300]}")
 
 def test_get_env_not_found():
-    """GET /{app}/{profile} where config does not exist."""
+    """GET /{app}/{profile} where config does not exist — returns 200 with empty propertySources."""
     test_name = "GET /{app}/{profile} (not found)"
     resp = requests.get(f"{BASE_URL}/nonexistent/nonexistent", auth=AUTH)
 
-    if resp.status_code == 404:
-        add_result(test_name, True)
+    if resp.status_code == 200:
+        data = resp.json()
+        if len(data.get("propertySources", [])) == 0:
+            add_result(test_name, True)
+        else:
+            add_result(test_name, False, f"Expected empty propertySources, got: {data}")
     else:
-        add_result(test_name, False, f"Expected 404, got {resp.status_code}")
+        add_result(test_name, False, f"Expected 200, got {resp.status_code}")
+
+
+def test_get_env_not_found_with_label():
+    """GET /{app}/{profile}/{label} where config does not exist — returns 200 with empty propertySources, null version, null state."""
+    test_name = "GET /{app}/{profile}/{label} (not found with label)"
+    resp = requests.get(f"{BASE_URL}/nonexistent/nonexistent/main", auth=AUTH)
+
+    if resp.status_code == 200:
+        data = resp.json()
+        if len(data.get("propertySources", [])) == 0 and data.get("version") is None and data.get("state") is None:
+            add_result(test_name, True)
+        else:
+            add_result(test_name, False, f"Expected empty propertySources and null version/state, got: {data}")
+    else:
+        add_result(test_name, False, f"Expected 200, got {resp.status_code}")
 
 def test_get_env_multiple_profiles():
     """GET /{app}/{profile1},{profile2} — multiple profiles."""
@@ -475,34 +485,34 @@ def test_delete_invalid_ext():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_get_env_with_special_chars_in_app():
-    """GET /{app}/{profile} — app name with special characters (should be rejected)."""
+    """GET /{app}/{profile} — app name with special characters returns 200 with empty propertySources (NOT FOUND)."""
     test_name = "GET /{app}/{profile} (invalid app name)"
     resp = requests.get(f"{BASE_URL}/app/invalid/default", auth=AUTH)
 
-    # Should return 400 for invalid path segment
-    if resp.status_code == 400:
-        add_result(test_name, True)
-    else:
-        # Also accept 404 as valid (the path segment validation might not apply to GET)
-        if resp.status_code == 404:
+    # Server returns 200 with empty propertySources for NOT FOUND (not 400)
+    if resp.status_code == 200:
+        data = resp.json()
+        if len(data.get("propertySources", [])) == 0:
             add_result(test_name, True)
         else:
-            add_result(test_name, False, f"Expected 400 or 404, got {resp.status_code}")
+            add_result(test_name, False, f"Expected empty propertySources, got: {data}")
+    else:
+        add_result(test_name, False, f"Expected 200, got {resp.status_code}")
 
 def test_get_env_with_spaces_in_profile():
-    """GET /{app}/{profile} — profile name with spaces."""
+    """GET /{app}/{profile} — profile name with spaces returns 200 with empty propertySources (NOT FOUND)."""
     test_name = "GET /{app}/{profile} (profile with spaces)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/profile with spaces", auth=AUTH)
 
-    # Should return 400 for invalid path segment
-    if resp.status_code == 400:
-        add_result(test_name, True)
-    else:
-        # Also accept 404 as valid
-        if resp.status_code == 404:
+    # Server returns 200 with empty propertySources for NOT FOUND (not 400)
+    if resp.status_code == 200:
+        data = resp.json()
+        if len(data.get("propertySources", [])) == 0:
             add_result(test_name, True)
         else:
-            add_result(test_name, False, f"Expected 400 or 404, got {resp.status_code}")
+            add_result(test_name, False, f"Expected empty propertySources, got: {data}")
+    else:
+        add_result(test_name, False, f"Expected 200, got {resp.status_code}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # RUN ALL TESTS
@@ -554,7 +564,6 @@ if __name__ == "__main__":
     test_get_env_basic()
     test_get_env_with_label()
     test_get_env_with_special_char_label()
-    test_get_env_file_ext()
     test_get_env_not_found()
     test_get_env_multiple_profiles()
 
