@@ -107,6 +107,11 @@ if __name__ == "__main__":
         default="",
         help="Optional label (overrides .env LABEL)",
     )
+    parser.add_argument(
+            "-profile",
+            default=os.getenv("CONFIG_SERVER_PROFILE") or "default",
+            help="configserver Profile",
+        )
     args = parser.parse_args()
 
     env = load_env()
@@ -114,7 +119,7 @@ if __name__ == "__main__":
     username = os.getenv("CONFIG_SERVER_USERNAME", env.get("CONFIG_SERVER_USERNAME", ""))
     password = os.getenv("CONFIG_SERVER_PASSWORD", env.get("CONFIG_SERVER_PASSWORD", ""))
     project = os.getenv("CONFIG_SERVER_PROJECT", env.get("CONFIG_SERVER_PROJECT", ""))
-    profile = os.getenv("CONFIG_SERVER_PROFILE", env.get("CONFIG_SERVER_PROFILE", "default"))
+    profile = args.profile
     label = args.label or os.getenv("CONFIG_SERVER_LABEL", env.get("CONFIG_SERVER_LABEL", ""))
 
     if not all([url, username, password, project, profile]):
