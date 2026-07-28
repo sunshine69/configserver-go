@@ -1,0 +1,7 @@
+database:
+  host: localhost
+  port: 5432
+  password: ${cipher:AYryOpDLHnAtMJgHCW064wO+03CHOujhiQWUCtzd+S0QJfDHduvK4XaeCcTaHRAp4GKDegc=}
+app:
+  name: myapp
+  debug: true

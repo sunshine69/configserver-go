@@ -238,7 +238,11 @@ func (a *App) Handler() http.Handler {
 // It is invoked after basic auth has already verified the user. The handler
 // supports both filesystem and postgres backends transparently through the
 // Backend interface.
-func RawFileHandler(w http.ResponseWriter, r *http.Request, app *App, be backend.Backend, relPath string) {
+//
+// If the request includes the query parameter "decrypt=true", any values in the
+// file matching the {cipher} pattern are automatically decrypted using the
+// authenticated user's encryption key.
+func RawFileHandler(w http.ResponseWriter, r *http.Request, app *App, be backend.Backend, relPath string, user *UserConfig) {
 	// Validate the relative path to prevent path traversal attacks.
 	if !lib.IsValidRelativePath(relPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
@@ -255,8 +259,15 @@ func RawFileHandler(w http.ResponseWriter, r *http.Request, app *App, be backend
 		return
 	}
 
+	content := string(data)
+
+	// If decrypt=true query parameter is set, decrypt cipher values in the content.
+	if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+		content = processCipherPatterns(content, user)
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(data)
+	w.Write([]byte(content))
 }
 
 // pathServingHandler handles requests that match the CONFIGSERVER_FILEPATH path prefix.
@@ -275,7 +286,7 @@ func (a *App) pathServingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	RawFileHandler(w, r, a, be, relPath)
+	RawFileHandler(w, r, a, be, relPath, user)
 }
 
 // Process cipher patterns in content.
@@ -486,8 +497,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 					return
 				}
+				content := string(data)
+
+				// If decrypt=true query parameter is set, decrypt cipher values in the content.
+				if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+					content = processCipherPatterns(content, user)
+				}
+
 				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(data)
+				w.Write([]byte(content))
 				return
 			}
 
@@ -502,8 +520,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 						http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 						return
 					}
+					content := string(data)
+
+					// If decrypt=true query parameter is set, decrypt cipher values in the content.
+					if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+						content = processCipherPatterns(content, user)
+					}
+
 					w.Header().Set("Content-Type", "application/octet-stream")
-					w.Write(data)
+					w.Write([]byte(content))
 					return
 				}
 				http.Error(w, "File not found", http.StatusNotFound)
@@ -526,8 +551,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 					return
 				}
+				content := string(data)
+
+				// If decrypt=true query parameter is set, decrypt cipher values in the content.
+				if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+					content = processCipherPatterns(content, user)
+				}
+
 				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(data)
+				w.Write([]byte(content))
 				return
 			}
 			http.Error(w, "File not found", http.StatusNotFound)
@@ -535,7 +567,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Fall through to path-based file serving
-		serveFile(w, be, paths[0])
+		serveFile(w, be, paths[0], r, user)
 		return
 	case pathsLen == 2:
 		// Check if client wants raw content via Accept header
@@ -554,8 +586,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 					return
 				}
+				content := string(data)
+
+				// If decrypt=true query parameter is set, decrypt cipher values in the content.
+				if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+					content = processCipherPatterns(content, user)
+				}
+
 				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(data)
+				w.Write([]byte(content))
 				return
 			}
 			// No extension: try all supported extensions
@@ -568,8 +607,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 					return
 				}
+				content := string(data)
+
+				// If decrypt=true query parameter is set, decrypt cipher values in the content.
+				if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+					content = processCipherPatterns(content, user)
+				}
+
 				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(data)
+				w.Write([]byte(content))
 				return
 			}
 			http.Error(w, "File not found", http.StatusNotFound)
@@ -584,7 +630,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		// Only treat as raw file path if it's a single filename (no slashes)
 		if strings.Contains(paths[2], ".") && !strings.Contains(paths[2], "/") {
 			// Serve as raw file by path — paths[2] is the filename itself
-			serveFile(w, be, paths[2])
+			serveFile(w, be, paths[2], r, user)
 			return
 		}
 		if acceptsRawContent {
@@ -605,8 +651,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 							http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 							return
 						}
+						content := string(data)
+
+						// If decrypt=true query parameter is set, decrypt cipher values in the content.
+						if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+							content = processCipherPatterns(content, user)
+						}
+
 						w.Header().Set("Content-Type", "application/octet-stream")
-						w.Write(data)
+						w.Write([]byte(content))
 						return
 					}
 				}
@@ -621,8 +674,15 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 						http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 						return
 					}
+					content := string(data)
+
+					// If decrypt=true query parameter is set, decrypt cipher values in the content.
+					if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+						content = processCipherPatterns(content, user)
+					}
+
 					w.Header().Set("Content-Type", "application/octet-stream")
-					w.Write(data)
+					w.Write([]byte(content))
 					return
 				}
 			}
@@ -648,19 +708,28 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 				return
 			}
+			content := string(data)
+
+			// If decrypt=true query parameter is set, decrypt cipher values in the content.
+			if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+				content = processCipherPatterns(content, user)
+			}
+
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(data)
+			w.Write([]byte(content))
 			return
 		}
 		// Non-raw: multi-segment path: /{app}/{profile}/{label}/{path}
 		// Build the full relative path from everything after app/profile
-		serveFile(w, be, filePath)
+		serveFile(w, be, filePath, r, user)
 		return
 	}
 }
 
 // serveFile returns the raw bytes of a file from the backend.
-func serveFile(w http.ResponseWriter, be backend.Backend, filename string) {
+// If decrypt is true and the user has an encryption key, cipher values
+// in the file content are automatically decrypted before serving.
+func serveFile(w http.ResponseWriter, be backend.Backend, filename string, r *http.Request, user *UserConfig) {
 	data, err := be.GetFileByPath(filename)
 	if backend.IsNotExist(err) {
 		http.Error(w, "File not found", http.StatusNotFound)
@@ -672,7 +741,15 @@ func serveFile(w http.ResponseWriter, be backend.Backend, filename string) {
 		fmt.Printf("[ERROR] %s\n", err.Error())
 		return
 	}
-	if _, err := w.Write(data); err != nil {
+
+	content := string(data)
+
+	// If decrypt=true query parameter is set, decrypt cipher values in the content.
+	if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+		content = processCipherPatterns(content, user)
+	}
+
+	if _, err := w.Write([]byte(content)); err != nil {
 		http.Error(w, "Error", http.StatusInternalServerError)
 		fmt.Printf("[ERROR] Sending data to client - %s\n", err.Error())
 		return
