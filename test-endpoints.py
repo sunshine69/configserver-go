@@ -26,7 +26,7 @@ env = load_env()
 BASE_URL = env.get("CONFIG_SERVER_URL", "http://localhost:7777")
 USERNAME = env.get("USERNAME", "user2")
 PASSWORD = env.get("PASSWORD", "changeme")
-PROJECT = env.get("PROJECT", "myapp")
+PROJECT = env.get("PROJECT", "myapp.mydomain")
 PROFILE = env.get("PROFILE", "default")
 LABEL = env.get("LABEL", "")
 
@@ -73,6 +73,9 @@ def assert_contains(response, test_name, expected_in_body):
 
 def upload_test_data():
     """Upload test data files to the server using simple_upload.py."""
+    global LABEL, TEST_DATA_DIR
+    if LABEL == "":
+        LABEL = "main"
     os.system(f"python3 simple_upload.py -path {TEST_DATA_DIR} -label {LABEL}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -85,10 +88,10 @@ def test_upload_without_label():
     fpath = os.path.join(TEST_DATA_DIR, "dev.yaml")
     with open(fpath, "r") as f:
         content = f.read()
-    
+
     params = {"app": PROJECT, "profile": PROFILE, "ext": ".yaml", "path": "dev.yaml"}
     resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     if resp.status_code == 200 and "uploaded" in resp.json().get("description", "").lower():
         add_result(test_name, True)
     else:
@@ -100,10 +103,10 @@ def test_upload_with_label():
     fpath = os.path.join(TEST_DATA_DIR, "prod.json")
     with open(fpath, "r") as f:
         content = f.read()
-    
+
     params = {"app": PROJECT, "profile": PROFILE, "label": "main", "ext": ".json", "path": "prod.json"}
     resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     if resp.status_code == 200 and "uploaded" in resp.json().get("description", "").lower():
         add_result(test_name, True)
     else:
@@ -115,12 +118,12 @@ def test_upload_with_special_char_label():
     fpath = os.path.join(TEST_DATA_DIR, "dev.yaml")
     with open(fpath, "r") as f:
         content = f.read()
-    
+
     # Label with parentheses and hyphens: feature(_)beta-testing
     special_label = "feature(_)beta-testing"
     params = {"app": PROJECT, "profile": PROFILE, "label": special_label, "ext": ".yaml", "path": "dev.yaml"}
     resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     if resp.status_code == 200 and "uploaded" in resp.json().get("description", "").lower():
         add_result(test_name, True)
     else:
@@ -132,7 +135,7 @@ def test_upload_invalid_ext():
     content = "hello"
     params = {"app": PROJECT, "profile": PROFILE, "ext": ".txt", "path": "test.txt"}
     resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     if resp.status_code == 400:
         add_result(test_name, True)
     else:
@@ -144,7 +147,7 @@ def test_upload_invalid_app():
     content = "hello"
     params = {"app": "app/invalid", "profile": PROFILE, "ext": ".yaml", "path": "test.yaml"}
     resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     if resp.status_code == 400:
         add_result(test_name, True)
     else:
@@ -156,7 +159,7 @@ def test_upload_missing_app():
     content = "hello"
     params = {"profile": PROFILE, "ext": ".yaml", "path": "test.yaml"}
     resp = requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     if resp.status_code == 400:
         add_result(test_name, True)
     else:
@@ -170,7 +173,7 @@ def test_get_env_basic():
     """GET /{app}/{profile} — basic JSON Environment response."""
     test_name = "GET /{app}/{profile} (basic)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/{PROFILE}", auth=AUTH)
-    
+
     if not assert_status(200, resp, test_name):
         return
     # Check response has required fields
@@ -184,7 +187,7 @@ def test_get_env_with_label():
     """GET /{app}/{profile}/{label} — with label."""
     test_name = "GET /{app}/{profile}/{label} (with label)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/{PROFILE}/main", auth=AUTH)
-    
+
     if not assert_status(200, resp, test_name):
         return
     data = resp.json()
@@ -199,7 +202,7 @@ def test_get_env_with_special_char_label():
     # Label with parentheses and hyphens: feature(_)beta-testing
     special_label = "feature(_)beta-testing"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/{PROFILE}/{special_label}", auth=AUTH)
-    
+
     if not assert_status(200, resp, test_name):
         return
     data = resp.json()
@@ -212,7 +215,7 @@ def test_get_env_file_ext():
     """GET /{app}/{profile}.yaml — request specific extension."""
     test_name = "GET /{app}/{profile}.yaml (file ext)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/{PROFILE}.yaml", auth=AUTH)
-    
+
     # This should return raw file content (application/octet-stream)
     if resp.status_code == 200 and "localhost" in resp.text:
         add_result(test_name, True)
@@ -223,7 +226,7 @@ def test_get_env_not_found():
     """GET /{app}/{profile} where config does not exist."""
     test_name = "GET /{app}/{profile} (not found)"
     resp = requests.get(f"{BASE_URL}/nonexistent/nonexistent", auth=AUTH)
-    
+
     if resp.status_code == 404:
         add_result(test_name, True)
     else:
@@ -233,7 +236,7 @@ def test_get_env_multiple_profiles():
     """GET /{app}/{profile1},{profile2} — multiple profiles."""
     test_name = "GET /{app}/{profile1},{profile2} (multiple profiles)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/default,main", auth=AUTH)
-    
+
     if resp.status_code == 200:
         data = resp.json()
         if "default" in data.get("profiles", []) and "main" in data.get("profiles", []):
@@ -252,7 +255,7 @@ def test_get_raw_file_by_path():
     test_name = "GET /{app}/{profile}/{label}/{path} (raw file)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/default/main/dev.yaml", auth=AUTH,
                        headers={"Accept": "application/octet-stream"})
-    
+
     if resp.status_code == 200 and "localhost" in resp.text:
         add_result(test_name, True)
     else:
@@ -263,7 +266,7 @@ def test_get_raw_file_default_label():
     test_name = "GET /{app}/{profile}/{path}?useDefaultLabel=true"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/default/dev.yaml?useDefaultLabel=true", auth=AUTH,
                        headers={"Accept": "application/octet-stream"})
-    
+
     if resp.status_code == 200 and "localhost" in resp.text:
         add_result(test_name, True)
     else:
@@ -274,7 +277,7 @@ def test_get_raw_file_not_found():
     test_name = "GET /{app}/{profile}/{label}/{path} (not found)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/default/main/nonexistent.yaml", auth=AUTH,
                        headers={"Accept": "application/octet-stream"})
-    
+
     if resp.status_code == 404:
         add_result(test_name, True)
     else:
@@ -287,7 +290,7 @@ def test_get_raw_file_with_special_char_label():
     special_label = "feature(_)beta-testing"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/default/{special_label}/dev.yaml", auth=AUTH,
                        headers={"Accept": "application/octet-stream"})
-    
+
     if resp.status_code == 200 and "localhost" in resp.text:
         add_result(test_name, True)
     else:
@@ -302,7 +305,7 @@ def test_encrypt_basic():
     test_name = "POST /encrypt (basic)"
     plaintext = "Hello, World!"
     resp = requests.post(f"{BASE_URL}/encrypt", auth=AUTH, data=plaintext)
-    
+
     if resp.status_code == 200 and len(resp.text) > 0:
         encrypted = resp.text
         # The encrypted value should not be the same as plaintext
@@ -317,7 +320,7 @@ def test_encrypt_empty():
     """POST /encrypt — encrypt an empty string."""
     test_name = "POST /encrypt (empty)"
     resp = requests.post(f"{BASE_URL}/encrypt", auth=AUTH, data="")
-    
+
     if resp.status_code == 200:
         add_result(test_name, True)
     else:
@@ -327,7 +330,7 @@ def test_encrypt_unauthorized():
     """POST /encrypt — unauthorized request."""
     test_name = "POST /encrypt (unauthorized)"
     resp = requests.post(f"{BASE_URL}/encrypt", data="test", auth=("wronguser", "wrongpass"))
-    
+
     if resp.status_code == 401:
         add_result(test_name, True)
     else:
@@ -341,18 +344,18 @@ def test_decrypt_basic():
     """POST /decrypt — decrypt an encrypted string."""
     test_name = "POST /decrypt (basic)"
     plaintext = "Hello, World!"
-    
+
     # First encrypt
     enc_resp = requests.post(f"{BASE_URL}/encrypt", auth=AUTH, data=plaintext)
     if enc_resp.status_code != 200:
         add_result(test_name, False, "Failed to encrypt for decrypt test")
         return
-    
+
     encrypted = enc_resp.text
-    
+
     # Then decrypt
     dec_resp = requests.post(f"{BASE_URL}/decrypt", auth=AUTH, data=encrypted)
-    
+
     if dec_resp.status_code == 200 and dec_resp.text == plaintext:
         add_result(test_name, True)
     else:
@@ -364,7 +367,7 @@ def test_decrypt_wrong_key():
     # Try to decrypt with a different user's encryption key
     # We'll use a random string that can't be decrypted by user2
     resp = requests.post(f"{BASE_URL}/decrypt", auth=AUTH, data="invalidcipher123")
-    
+
     # This should return 400 because decryption fails with wrong key
     if resp.status_code == 400:
         add_result(test_name, True)
@@ -375,7 +378,7 @@ def test_decrypt_unauthorized():
     """POST /decrypt — unauthorized request."""
     test_name = "POST /decrypt (unauthorized)"
     resp = requests.post(f"{BASE_URL}/decrypt", data="test", auth=("wronguser", "wrongpass"))
-    
+
     if resp.status_code == 401:
         add_result(test_name, True)
     else:
@@ -389,7 +392,7 @@ def test_list_basic():
     """GET /list — list all configuration files."""
     test_name = "GET /list (basic)"
     resp = requests.get(f"{BASE_URL}/list", auth=AUTH)
-    
+
     if resp.status_code == 200 and isinstance(resp.json(), list):
         files = resp.json()
         if len(files) > 0:
@@ -403,7 +406,7 @@ def test_list_unauthorized():
     """GET /list — unauthorized request."""
     test_name = "GET /list (unauthorized)"
     resp = requests.get(f"{BASE_URL}/list", auth=("wronguser", "wrongpass"))
-    
+
     if resp.status_code == 401:
         add_result(test_name, True)
     else:
@@ -421,14 +424,14 @@ def test_delete_basic():
     fpath = os.path.join(TEST_DATA_DIR, "list.yaml")
     with open(fpath, "r") as f:
         content = f.read()
-    
+
     params = {"app": PROJECT, "profile": PROFILE, "ext": ".yaml", "path": "list.yaml"}
     requests.post(f"{BASE_URL}/upload", auth=AUTH, params=params, data=content)
-    
+
     # Then delete
     del_params = {"app": PROJECT, "profile": PROFILE, "ext": ".yaml"}
     del_resp = requests.delete(f"{BASE_URL}/delete", auth=AUTH, params=del_params)
-    
+
     if del_resp.status_code == 200 and "deleted" in del_resp.json().get("description", "").lower():
         add_result(test_name, True)
     else:
@@ -439,7 +442,7 @@ def test_delete_not_found():
     test_name = "POST /delete (not found)"
     del_params = {"app": "nonexistent", "profile": "nonexistent", "ext": ".yaml"}
     del_resp = requests.delete(f"{BASE_URL}/delete", auth=AUTH, params=del_params)
-    
+
     if del_resp.status_code == 404:
         add_result(test_name, True)
     else:
@@ -450,7 +453,7 @@ def test_delete_missing_params():
     test_name = "POST /delete (missing params)"
     del_params = {"app": PROJECT}  # missing profile and ext
     del_resp = requests.delete(f"{BASE_URL}/delete", auth=AUTH, params=del_params)
-    
+
     if del_resp.status_code == 400:
         add_result(test_name, True)
     else:
@@ -461,7 +464,7 @@ def test_delete_invalid_ext():
     test_name = "POST /delete (invalid ext)"
     del_params = {"app": PROJECT, "profile": PROFILE, "ext": ".txt"}
     del_resp = requests.delete(f"{BASE_URL}/delete", auth=AUTH, params=del_params)
-    
+
     if del_resp.status_code == 400:
         add_result(test_name, True)
     else:
@@ -475,7 +478,7 @@ def test_get_env_with_special_chars_in_app():
     """GET /{app}/{profile} — app name with special characters (should be rejected)."""
     test_name = "GET /{app}/{profile} (invalid app name)"
     resp = requests.get(f"{BASE_URL}/app/invalid/default", auth=AUTH)
-    
+
     # Should return 400 for invalid path segment
     if resp.status_code == 400:
         add_result(test_name, True)
@@ -490,7 +493,7 @@ def test_get_env_with_spaces_in_profile():
     """GET /{app}/{profile} — profile name with spaces."""
     test_name = "GET /{app}/{profile} (profile with spaces)"
     resp = requests.get(f"{BASE_URL}/{PROJECT}/profile with spaces", auth=AUTH)
-    
+
     # Should return 400 for invalid path segment
     if resp.status_code == 400:
         add_result(test_name, True)
@@ -511,13 +514,13 @@ if __name__ == "__main__":
     print(f"Base URL: {BASE_URL}")
     print(f"User: {USERNAME}")
     print("=" * 80)
-    
+
     # Reset the app before running tests
     print("\n>>> Resetting app...")
     os.system("docker compose down -v; docker compose up -d --build")
     print(">>> Waiting for server to be ready...")
     time.sleep(5)
-    
+
     # Verify server is up
     try:
         health = requests.get(f"{BASE_URL}/health")
@@ -528,17 +531,17 @@ if __name__ == "__main__":
     except Exception as e:
         print(f">>> ERROR: Cannot reach server: {e}")
         sys.exit(1)
-    
+
     # Upload test data first
     print("\n>>> Uploading test data...")
     upload_test_data()
     time.sleep(1)
-    
+
     # Run all tests
     print("\n" + "=" * 80)
     print("RUNNING TESTS")
     print("=" * 80)
-    
+
     # Upload tests
     test_upload_without_label()
     test_upload_with_label()
@@ -546,7 +549,7 @@ if __name__ == "__main__":
     test_upload_invalid_ext()
     test_upload_invalid_app()
     test_upload_missing_app()
-    
+
     # JSON Environment endpoint tests
     test_get_env_basic()
     test_get_env_with_label()
@@ -554,53 +557,53 @@ if __name__ == "__main__":
     test_get_env_file_ext()
     test_get_env_not_found()
     test_get_env_multiple_profiles()
-    
+
     # Plain Text / Raw File endpoint tests
     test_get_raw_file_by_path()
     test_get_raw_file_default_label()
     test_get_raw_file_with_special_char_label()
     test_get_raw_file_not_found()
-    
+
     # Encrypt tests
     test_encrypt_basic()
     test_encrypt_empty()
     test_encrypt_unauthorized()
-    
+
     # Decrypt tests
     test_decrypt_basic()
     test_decrypt_wrong_key()
     test_decrypt_unauthorized()
-    
+
     # List tests
     test_list_basic()
     test_list_unauthorized()
-    
+
     # Delete tests
     test_delete_basic()
     test_delete_not_found()
     test_delete_missing_params()
     test_delete_invalid_ext()
-    
+
     # Edge case tests
     test_get_env_with_special_chars_in_app()
     test_get_env_with_spaces_in_profile()
-    
+
     # Summary
     print("\n" + "=" * 80)
     print("TEST RESULTS")
     print("=" * 80)
-    
+
     passed = sum(1 for r in results if r["passed"])
     failed = sum(1 for r in results if not r["passed"])
-    
+
     for r in results:
         status = "✓ PASS" if r["passed"] else "✗ FAIL"
         print(f"  {status}: {r['test']}")
         if not r["passed"]:
             print(f"         Detail: {r['detail']}")
-    
+
     print(f"\nTotal: {len(results)} tests — {passed} passed, {failed} failed")
-    
+
     # Print failed tests summary for docs
     if failed > 0:
         print("\nFAILED TESTS (for documentation):")
@@ -608,6 +611,6 @@ if __name__ == "__main__":
         for r in results:
             if not r["passed"]:
                 print(f"  - {r['test']}: {r['detail']}")
-    
+
     # Exit with non-zero if any tests failed
     sys.exit(1 if failed > 0 else 0)

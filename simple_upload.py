@@ -127,4 +127,3 @@ if __name__ == "__main__":
     print(f"Directory: {args.path}")
     print()
     upload_dir(url, username, password, project, profile, args.path, label)
-
