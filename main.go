@@ -39,9 +39,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port  int          `yaml:"port"`
-	Ssl   SslConfig    `yaml:"ssl"`
-	Users []UserConfig `yaml:"users"`
+	Port         int          `yaml:"port"`
+	Ssl          SslConfig    `yaml:"ssl"`
+	Users        []UserConfig `yaml:"users"`
+	DefaultLabel string       `yaml:"default_label"`
 }
 
 // PasswordMeta contains metadata about a stored password.
@@ -65,6 +66,7 @@ type UserConfig struct {
 	Directory     string                     `yaml:"directory"`
 	Backend       string                     `yaml:"backend"`
 	Postgres      backend.PostgresUserConfig `yaml:"postgres"`
+	DefaultLabel  string                     `yaml:"default_label"`
 }
 
 // UserBackend satisfies backend.UserBackend.
@@ -123,6 +125,7 @@ type App struct {
 
 var (
 	users      = make(map[string]*UserConfig)
+	globalDefaultLabel string
 	configFile = flag.String("c", u.Getenv("CONFIG_FILE", "config.yaml"), "Config file to load")
 	migrate    = flag.Bool("migrate", true, "Run database migrations at startup")
 )
@@ -140,6 +143,9 @@ func LoadConfig() Config {
 	for _, user := range yamlobj.Server.Users {
 		users[user.Username] = &user
 	}
+
+	// Set global default label if configured
+	globalDefaultLabel = yamlobj.Server.DefaultLabel
 
 	return yamlobj
 }
@@ -547,7 +553,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// No extension: serve as JSON GetValuesResponse
-			a.serveValues(w, be, user, app, []string{profile}, "")
+			a.serveValues(w, be, user, app, []string{profile}, "", r)
 			return
 		}
 
@@ -633,7 +639,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])
-		a.serveValues(w, be, user, paths[0], profiles, "")
+		a.serveValues(w, be, user, paths[0], profiles, "", r)
 		return
 	case pathsLen == 3:
 		// Could be /{app}/{profile}/{label} or /{app}/{profile}/{path}
@@ -654,7 +660,12 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				label = l
 				for _, fileExt := range lib.SupportedConfigFileType {
 					if strings.EqualFold(e, fileExt) {
-						data, err := be.GetFile(app, profile, label, fileExt)
+						// Resolve label: if empty label and useDefaultLabel query param, use user's default label
+						resolvedLabel := label
+						if resolvedLabel == "" && r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
+							resolvedLabel = user.DefaultLabel
+						}
+						data, err := be.GetFile(app, profile, resolvedLabel, fileExt)
 						if backend.IsNotExist(err) {
 							continue
 						}
@@ -676,8 +687,13 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				// No extension: try all supported extensions
+				// Resolve label: if empty label and useDefaultLabel query param, use user's default label
+				resolvedLabel := label
+				if resolvedLabel == "" && r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
+					resolvedLabel = user.DefaultLabel
+				}
 				for _, fileExt := range lib.SupportedConfigFileType {
-					data, err := be.GetFile(app, profile, label, fileExt)
+					data, err := be.GetFile(app, profile, resolvedLabel, fileExt)
 					if backend.IsNotExist(err) {
 						continue
 					}
@@ -701,7 +717,12 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])
-		a.serveValues(w, be, user, paths[0], profiles, label)
+		// Resolve label: if empty label and useDefaultLabel query param, use user's default label
+		resolvedLabel := label
+		if resolvedLabel == "" && r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
+			resolvedLabel = user.DefaultLabel
+		}
+		a.serveValues(w, be, user, paths[0], profiles, "", r)
 		return
 	case pathsLen > 3:
 		// Multi-segment path: /{app}/{profile}/{label}/{path}
@@ -770,6 +791,30 @@ func serveFile(w http.ResponseWriter, be backend.Backend, filename, label string
 	}
 }
 
+// resolveLabel determines the label to use for fetching config when no
+// explicit label is specified in the URL path. It checks the useDefaultLabel
+// query parameter and falls back to the user's DefaultLabel setting.
+func resolveLabel(labelFromPath string, r *http.Request, user *UserConfig) string {
+	// 1. Path label always wins
+	if labelFromPath != "" {
+		return labelFromPath
+	}
+
+	// 2. User-level default label (only if useDefaultLabel param is set)
+	if r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
+		return user.DefaultLabel
+	}
+
+	// 3. Global default label (only if useDefaultLabel param is set)
+	if r.URL.Query().Has("useDefaultLabel") && globalDefaultLabel != "" {
+		return globalDefaultLabel
+	}
+
+	// 4. Hardcoded fallback to "main" — this is the final fallback when
+	// useDefaultLabel is set but no default label is configured anywhere.
+	return "main"
+}
+
 // hasLabelSources checks if any config files exist for the given label.
 func (a *App) hasLabelSources(be backend.Backend, user *UserConfig, app string, profiles []string, label string) bool {
 	for _, profile := range profiles {
@@ -835,20 +880,19 @@ func (a *App) findLabelForFallback(be backend.Backend, user *UserConfig, app str
 //
 // Higher-precedence sources are listed earlier in the propertySources array.
 //
-// Default label fallback: When no label is specified, tries "main" first,
-// then falls back to "master" (matches Spring Cloud Config Server behavior).
-func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserConfig, app string, profiles []string, label string) {
+// Default label fallback: When no label is specified, uses the user's DefaultLabel
+// if useDefaultLabel query param is set, or tries "main" then "master"
+// (matches Spring Cloud Config Server behavior).
+func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserConfig, app string, profiles []string, label string, r *http.Request) {
 	if len(profiles) == 0 {
 		http.Error(w, "No profiles specified", http.StatusBadRequest)
 		return
 	}
 
-	// Default label fallback: if no label specified, use findLabelForFallback
-	// which checks empty label first, then "main", then "master".
-	var selectedLabel string
-	if label != "" {
-		selectedLabel = label
-	} else {
+	// Default label fallback: if no label specified, use resolveLabel
+	// which checks useDefaultLabel query param and falls back to findLabelForFallback.
+	selectedLabel := resolveLabel(label, r, user)
+	if selectedLabel == "" {
 		selectedLabel = a.findLabelForFallback(be, user, app, profiles)
 	}
 

@@ -4,6 +4,9 @@ server:
     enable: false
     key: /path/to/private/keyfile
     cert: /path/to/certfile
+  # Global default label — used when useDefaultLabel query param is set and no user
+  # level default_label is configured. Fallbacks: user default → global default → "main".
+  default_label: ${DEFAULT_LABEL:-}
   users:
     # User 1: Filesystem backend
     - username: ${USER1_USERNAME}
@@ -11,18 +14,21 @@ server:
       encryption_key: ${USER1_ENCRYPTION_KEY}
       directory: ${USER1_DIRECTORY}
       backend: filesystem
+      default_label: ${USER1_DEFAULT_LABEL:-development}
 
     # User 2: PostgreSQL backend
     - username: ${USER2_USERNAME}
       password: ${USER2_PASSWORD}
       encryption_key: ${USER2_ENCRYPTION_KEY}
       backend: postgres
+      default_label: ${USER2_DEFAULT_LABEL:-development}
 
 backend_config:
   filesystem:
     directories:
       - ${USER1_DIRECTORY}
 
+  # This has not been implemented yet
   git:
     url: http://etc.com
 

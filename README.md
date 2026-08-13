@@ -15,6 +15,7 @@ Built for reliability and performance, this server supports multiple backends (P
 | Hierarchical resolution | ✅ | 4-level: application → application-{profile} → {app} → {app}-{profile} |
 | Format support | ✅ | YAML, JSON, Properties — with extension priority |
 | Label support | ✅ | `/{app}/{profile}/{label}` for branch/versioning |
+| Default label fallback | ✅ | `?useDefaultLabel` query param — falls back to configured default label |
 | Encryption/Decryption | ✅ | Ciphertext stored, decrypted at fetch time |
 | Placeholder resolution | ❌ | Disabled — `${VAR}` placeholders are preserved as-is, never replaced |
 | Raw file serving | ✅ | `GET /{app}-{profile}.{ext}` returns raw bytes |
@@ -97,6 +98,24 @@ GET http://localhost:7777/myapp/dev/main
 
 # Label "main" is used when fetching from the backend
 ```
+
+#### Default Label (Favorable)
+
+```bash
+# Request the user's configured default label
+GET http://localhost:7777/myapp/dev?useDefaultLabel
+
+# Resolves to: GET http://localhost:7777/myapp/dev/<default_label>
+
+# Default label resolution order:
+# 1. User-level default_label (config.yaml server.users[].default_label)
+# 2. Global default_label (config.yaml server.default_label)
+# 3. "main" (hardcoded fallback)
+```
+
+**Example**: If user has `default_label: development` in config.yaml:
+- `GET /myapp/dev?useDefaultLabel` → returns the same as `GET /myapp/dev/development`
+- `GET /myapp/dev` → uses standard label resolution (empty → main → master)
 
 #### Raw File
 
@@ -253,6 +272,9 @@ server:
     enable: false
     key: /path/to/private/keyfile
     cert: /path/to/certfile
+  # Global default label — used when ?useDefaultLabel query param is set and no user-level default_label exists.
+  # Fallback order: user default → global default → "main" (hardcoded).
+  default_label: ${DEFAULT_LABEL:-}
   users:
     # Filesystem backend user
     - username: user1
@@ -260,12 +282,16 @@ server:
       encryption_key: mySecretKey123
       directory: /data/config/user1
       backend: filesystem
+      # User-level default label — overrides global default for this user.
+      default_label: ${USER1_DEFAULT_LABEL:-development}
 
     # PostgreSQL backend user
     - username: user2
       password: changeme
       encryption_key: mySecretKey456
       backend: postgres
+      # User-level default label — overrides global default for this user.
+      default_label: ${USER2_DEFAULT_LABEL:-development}
 
 backend_config:
   filesystem:
@@ -275,6 +301,48 @@ backend_config:
   postgres:
     default_connection_string: "postgres://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT:-5432}/${DATABASE_NAME}?sslmode=disable"
 ```
+
+#### Default Label Configuration
+
+The `default_label` setting determines which label is used when the `?useDefaultLabel` query parameter is included in a config fetch request.
+
+| Level | Field | Description |
+|-------|-------|-------------|
+| Global | `server.default_label` | Applies to all users when no user-level default is set. Defaults to empty (no effect). |
+| User-level | `server.users[].default_label` | Overrides the global default for a specific user. Defaults to `development`. |
+
+**Resolution order** (when `?useDefaultLabel` is set):
+
+1. **Path label** — `/{app}/{profile}/{label}` takes precedence over everything.
+2. **User-level `default_label`** — The user's configured default.
+3. **Global `default_label`** — The server-wide default.
+4. **`"main"`** — Hardcoded fallback if no `default_label` is configured anywhere.
+
+If `?useDefaultLabel` is not set, the standard label resolution (empty → main → master) is used, regardless of `default_label` settings.
+
+#### Environment Variables
+
+The config file supports `${VAR}` expansion for sensitive values. Set these in `.env` or the environment:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONFIG_FILE` | `config.yaml` | Config file path |
+| `DATABASE_HOST` | `postgres` | PostgreSQL host |
+| `DATABASE_PORT` | `5432` | PostgreSQL port |
+| `DATABASE_USER` | `configuser` | PostgreSQL user |
+| `DATABASE_PASSWORD` | `configpass` | PostgreSQL password |
+| `DATABASE_NAME` | `configdb` | PostgreSQL database |
+| `DEFAULT_LABEL` | *(empty)* | Global default label (all users) |
+| `USER1_DEFAULT_LABEL` | `development` | User 1's default label |
+| `USER2_DEFAULT_LABEL` | `development` | User 2's default label |
+| `SERVER_PORT` | `7777` | Server port |
+| `USER1_USERNAME` | *(none)* | User 1 username |
+| `USER1_PASSWORD` | *(none)* | User 1 password |
+| `USER1_ENCRYPTION_KEY` | *(none)* | User 1 encryption key |
+| `USER1_DIRECTORY` | *(none)* | User 1 directory |
+| `USER2_USERNAME` | *(none)* | User 2 username |
+| `USER2_PASSWORD` | *(none)* | User 2 password |
+| `USER2_ENCRYPTION_KEY` | *(none)* | User 2 encryption key |
 
 ### Environment Variables
 
