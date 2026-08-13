@@ -36,7 +36,9 @@ type Backend interface {
 	// GetFileByPath returns raw content addressed by a full path or filename.
 	// Used when the caller requests a raw file serve (not the Spring Cloud
 	// GetValues format).
-	GetFileByPath(fullPath string) ([]byte, error)
+	// The optional label parameter is used for filtering when multiple labels
+	// exist for the same path (e.g., postgres rows with same path but different label).
+	GetFileByPath(fullPath, label string) ([]byte, error)
 
 	// ListFiles returns all config files known to this backend for this user.
 	// Not currently used by handlers — reserved for future admin endpoints.

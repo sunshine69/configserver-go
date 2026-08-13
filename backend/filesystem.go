@@ -56,7 +56,7 @@ func BuildConfigFilename(app, profile, label string) string {
 	return strings.Join(parts, "-")
 }
 
-func (b *FileSystemBackend) GetFileByPath(filename string) ([]byte, error) {
+func (b *FileSystemBackend) GetFileByPath(filename, _ string) ([]byte, error) {
 	// Prepend base directory to create full path.
 	fullPath := filepath.Join(b.BaseDir, filename)
 	if !strings.Contains(fullPath, b.BaseDir) {

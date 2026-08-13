@@ -260,19 +260,25 @@ func (b *postgresUserBackend) GetFile(app, profile, label string, ext string) ([
 
 // GetFileByPath returns the file content stored under the given relative path.
 // The path is stored in the 'path' column and was populated by PutFileWithFullPath.
-func (b *postgresUserBackend) GetFileByPath(fullPath string) ([]byte, error) {
+// The label parameter is used for filtering when multiple labels exist for the same
+// path (e.g., rows with same path but different label in the unique constraint).
+func (b *postgresUserBackend) GetFileByPath(fullPath, label string) ([]byte, error) {
 	// Clean the path: remove leading/trailing slashes, reject traversal.
 	cleanPath := strings.Trim(fullPath, "/")
 	if !IsValidRelativePath(cleanPath) {
 		return nil, fmt.Errorf("invalid path: %s", fullPath)
 	}
 
+	// When a label is provided, also filter by it — this is necessary when
+	// the same file path has been uploaded with multiple labels. The unique
+	// constraint (username, app, profile, label, ext, path) means multiple
+	// rows can share the same path but have different labels.
 	q := fmt.Sprintf(
-		"SELECT content FROM %s WHERE username=$1 AND path=$2",
+		"SELECT content FROM %s WHERE username=$1 AND path=$2 AND label=$3",
 		b.table,
 	)
 	var content []byte
-	err := b.db.QueryRow(context.Background(), q, b.username, cleanPath).Scan(&content)
+	err := b.db.QueryRow(context.Background(), q, b.username, cleanPath, label).Scan(&content)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotExist
 	}
