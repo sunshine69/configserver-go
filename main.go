@@ -554,8 +554,9 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// No extension: serve as JSON GetValuesResponse
-			a.serveValues(w, be, user, app, []string{profile}, "", r)
+			// No extension: serve as JSON GetValuesResponse — use resolvedLabel for default
+			selectedLabel := resolveLabel("", r, user)
+			a.serveValues(w, be, user, app, []string{profile}, selectedLabel, r)
 			return
 		}
 
@@ -641,7 +642,9 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])
-		a.serveValues(w, be, user, paths[0], profiles, "", r)
+		// resolveLabel with empty labelFromPath: falls back to user.DefaultLabel → globalDefaultLabel → "main"
+		selectedLabel := resolveLabel("", r, user)
+		a.serveValues(w, be, user, paths[0], profiles, selectedLabel, r)
 		return
 	case pathsLen == 3:
 		// Could be /{app}/{profile}/{label} or /{app}/{profile}/{path}
@@ -724,7 +727,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		if resolvedLabel == "" && r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
 			resolvedLabel = user.DefaultLabel
 		}
-		a.serveValues(w, be, user, paths[0], profiles, "", r)
+		a.serveValues(w, be, user, paths[0], profiles, resolvedLabel, r)
 		return
 	case pathsLen > 3:
 		// Multi-segment path: /{app}/{profile}/{label}/{path}
@@ -800,26 +803,30 @@ func serveFile(w http.ResponseWriter, be backend.Backend, app, filename, label s
 }
 
 // resolveLabel determines the label to use for fetching config when no
-// explicit label is specified in the URL path. It checks the useDefaultLabel
-// query parameter and falls back to the user's DefaultLabel setting.
+// explicit label is specified in the URL path.
+//
+// Priority:
+//  1. Label from path (always wins)
+//  2. User-level default label (if user.DefaultLabel is set)
+//  3. Global default label (if globalDefaultLabel is set)
+//  4. Hardcoded fallback "main"
 func resolveLabel(labelFromPath string, r *http.Request, user *UserConfig) string {
 	// 1. Path label always wins
 	if labelFromPath != "" {
 		return labelFromPath
 	}
 
-	// 2. User-level default label (only if useDefaultLabel param is set)
-	if r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
+	// 2. User-level default label (always, if set)
+	if user.DefaultLabel != "" {
 		return user.DefaultLabel
 	}
 
-	// 3. Global default label (only if useDefaultLabel param is set)
-	if r.URL.Query().Has("useDefaultLabel") && globalDefaultLabel != "" {
+	// 3. Global default label (always, if set)
+	if globalDefaultLabel != "" {
 		return globalDefaultLabel
 	}
 
-	// 4. Hardcoded fallback to "main" — this is the final fallback when
-	// useDefaultLabel is set but no default label is configured anywhere.
+	// 4. Hardcoded fallback to "main"
 	return "main"
 }
 
