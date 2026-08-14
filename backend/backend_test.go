@@ -139,7 +139,7 @@ func TestFileSystemBackend_GetFileByPath(t *testing.T) {
 	backend := NewFileSystemBackend(tmpDir)
 
 	// Test successful retrieval
-	content, err := backend.GetFileByPath("test.yaml", "")
+	content, err := backend.GetFileByPath("test", "test.yaml", "")
 	if err != nil {
 		t.Fatalf("GetFileByPath returned error: %v", err)
 	}
@@ -148,13 +148,13 @@ func TestFileSystemBackend_GetFileByPath(t *testing.T) {
 	}
 
 	// Test directory traversal protection
-	_, err = backend.GetFileByPath("/etc/passwd", "")
+	_, err = backend.GetFileByPath("", "/etc/passwd", "")
 	if err == nil {
 		t.Error("expected error for path outside base directory, got nil")
 	}
 
 	// Test file not found
-	_, err = backend.GetFileByPath("nonexistent.yaml", "")
+	_, err = backend.GetFileByPath("", "nonexistent.yaml", "")
 	if !IsNotExist(err) {
 		t.Errorf("expected ErrNotExist, got %v", err)
 	}

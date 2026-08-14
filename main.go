@@ -43,6 +43,7 @@ type ServerConfig struct {
 	Ssl          SslConfig    `yaml:"ssl"`
 	Users        []UserConfig `yaml:"users"`
 	DefaultLabel string       `yaml:"default_label"`
+	Debug        bool         `yaml:"debug"`
 }
 
 // PasswordMeta contains metadata about a stored password.
@@ -128,6 +129,7 @@ var (
 	globalDefaultLabel string
 	configFile = flag.String("c", u.Getenv("CONFIG_FILE", "config.yaml"), "Config file to load")
 	migrate    = flag.Bool("migrate", true, "Run database migrations at startup")
+	debugLogger *log.Logger
 )
 
 func LoadConfig() Config {
@@ -153,6 +155,14 @@ func LoadConfig() Config {
 func main() {
 	flag.Parse()
 	appConfig := LoadConfig()
+
+	// Initialize debug logger if debug mode is enabled
+	if appConfig.Server.Debug {
+		debugLogger = log.New(os.Stdout, "[DEBUG] ", log.LstdFlags)
+	} else {
+		// Create a no-op logger that discards everything
+		debugLogger = log.New(io.Discard, "", 0)
+	}
 
 	// Build backend resolver.
 	var fsBackend *backend.FileSystemBackend
@@ -311,20 +321,30 @@ func (a *App) pathServingHandler(w http.ResponseWriter, r *http.Request) {
 // Process cipher patterns in content.
 func processCipherPatterns(content string, user *UserConfig) string {
 	return lib.CipherPattern.ReplaceAllStringFunc(content, func(match string) string {
+		debugLogger.Printf("[processCipherPatterns] raw match: %q", match)
+		debugLogger.Printf("[processCipherPatterns] user: %s, has encryption_key: %v", user.Username, user.EncryptionKey != "")
+
 		cipherData := strings.TrimPrefix(strings.TrimSuffix(match, "'"), "'")
+		debugLogger.Printf("[processCipherPatterns] after trim prefix/suffix of ': %q", cipherData)
 		cipherData = strings.TrimPrefix(cipherData, "{cipher}")
+		debugLogger.Printf("[processCipherPatterns] after trim prefix '{cipher}': %q (len=%d)", cipherData, len(cipherData))
 
 		var decrypted string
 		var err error
 
 		if user.EncryptionKey != "" {
 			// Symmetric encryption
+			debugLogger.Printf("[processCipherPatterns] attempting decryption with user enc key, key length: %d", len(user.EncryptionKey))
 			decrypted, err = u.Decrypt(cipherData, user.EncryptionKey, nil)
-		} // TODO support asym decrypt?
+		} else {
+			debugLogger.Printf("[processCipherPatterns] NO encryption key configured for user %s, skipping decryption", user.Username)
+		}
 		if err != nil {
-			fmt.Printf("[ERROR] %s\nData: %s\n", err.Error(), cipherData)
+			debugLogger.Printf("[processCipherPatterns] DECRYPT FAILED for match %q, cipherData %q, user %s, key=%q: %s",
+				match, cipherData, user.Username, user.EncryptionKey, err.Error())
 			return "<n/a>"
 		}
+		debugLogger.Printf("[processCipherPatterns] decrypt success: %q", decrypted)
 		return decrypted
 	})
 }
@@ -554,9 +574,18 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// No extension: serve as JSON GetValuesResponse — use resolvedLabel for default
+			// No extension: serve as JSON GetValuesResponse — prepend "default" profile and use resolvedLabel for default
+			profiles := []string{profile}
+			// Prepend "default" to profiles if not already present (Spring Cloud Config auto-include default profile)
+			if profiles[0] != "default" {
+				profiles = append([]string{"default"}, profiles...)
+			}
 			selectedLabel := resolveLabel("", r, user)
-			a.serveValues(w, be, user, app, []string{profile}, selectedLabel, r)
+			// If resolveLabel returned the hardcoded "main" fallback, use findLabelForFallback
+			if selectedLabel == "main" && user.DefaultLabel == "" && globalDefaultLabel == "" {
+				selectedLabel = a.findLabelForFallback(be, user, app, profiles)
+			}
+			a.serveValues(w, be, user, app, profiles, selectedLabel, r)
 			return
 		}
 
@@ -586,8 +615,14 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Fall through to path-based file serving
-		serveFile(w, be, paths[0], paths[0], "", r, user)
+		// No hyphen: /{app} — resolve profiles as "default" and return JSON
+		profiles := []string{"default"}
+		selectedLabel := resolveLabel("", r, user)
+		// If resolveLabel returned the hardcoded "main" fallback, use findLabelForFallback
+		if selectedLabel == "main" && user.DefaultLabel == "" && globalDefaultLabel == "" {
+			selectedLabel = a.findLabelForFallback(be, user, paths[0], profiles)
+		}
+		a.serveValues(w, be, user, paths[0], profiles, selectedLabel, r)
 		return
 	case pathsLen == 2:
 		// Check if client wants raw content via Accept header
@@ -642,8 +677,16 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])
+		// Prepend "default" to profiles if not already present (Spring Cloud Config auto-include default profile)
+		if profiles[0] != "default" {
+			profiles = append([]string{"default"}, profiles...)
+		}
 		// resolveLabel with empty labelFromPath: falls back to user.DefaultLabel → globalDefaultLabel → "main"
 		selectedLabel := resolveLabel("", r, user)
+		// If resolveLabel returned the hardcoded "main" fallback, use findLabelForFallback
+		if selectedLabel == "main" && user.DefaultLabel == "" && globalDefaultLabel == "" {
+			selectedLabel = a.findLabelForFallback(be, user, paths[0], profiles)
+		}
 		a.serveValues(w, be, user, paths[0], profiles, selectedLabel, r)
 		return
 	case pathsLen == 3:
@@ -722,6 +765,10 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profiles := lib.ParseProfiles(paths[1])
+		// Prepend "default" to profiles if not already present (Spring Cloud Config auto-include default profile)
+		if profiles[0] != "default" {
+			profiles = append([]string{"default"}, profiles...)
+		}
 		// Resolve label: if empty label and useDefaultLabel query param, use user's default label
 		resolvedLabel := label
 		if resolvedLabel == "" && r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
@@ -907,7 +954,9 @@ func (a *App) serveValues(w http.ResponseWriter, be backend.Backend, user *UserC
 	// Default label fallback: if no label specified, use resolveLabel
 	// which checks useDefaultLabel query param and falls back to findLabelForFallback.
 	selectedLabel := resolveLabel(label, r, user)
-	if selectedLabel == "" {
+	// If resolveLabel returned the hardcoded "main" fallback (meaning no user/global default and no path label),
+	// use findLabelForFallback to check which label actually has files.
+	if selectedLabel == "" || (selectedLabel == "main" && user.DefaultLabel == "" && globalDefaultLabel == "") {
 		selectedLabel = a.findLabelForFallback(be, user, app, profiles)
 	}
 
@@ -977,6 +1026,8 @@ func (a *App) fetchPropertySource(be backend.Backend, user *UserConfig, app, pro
 	}
 
 	parsedContent := string(data)
+	debugLogger.Printf("[fetchPropertySource] fetching property source: app=%s profile=%s label=%s ext=%s",
+		app, profile, label, ext)
 	parsedContent = processCipherPatterns(parsedContent, user)
 	parsedContent = lib.ResolvePlaceholders(parsedContent)
 	result := lib.ParseConfigData(parsedContent, ext)

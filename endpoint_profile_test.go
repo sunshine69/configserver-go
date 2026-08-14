@@ -85,7 +85,6 @@ func TestServeValuesNoProfileReturnsDefault(t *testing.T) {
 	if resp.Profiles[0] != "default" {
 		t.Fatalf("expected profile 'default', got %q", resp.Profiles[0])
 	}
-
 	// Verify property source contains the default value
 	if len(resp.PropertySources) != 1 {
 		t.Fatalf("expected 1 property source, got %d", len(resp.PropertySources))
