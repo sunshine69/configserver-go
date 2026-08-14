@@ -260,9 +260,11 @@ func (b *postgresUserBackend) GetFile(app, profile, label string, ext string) ([
 
 // GetFileByPath returns the file content stored under the given relative path.
 // The path is stored in the 'path' column and was populated by PutFileWithFullPath.
+// The app parameter filters by app to ensure we don't return files from other apps
+// that happen to have the same relative path.
 // The label parameter is used for filtering when multiple labels exist for the same
 // path (e.g., rows with same path but different label in the unique constraint).
-func (b *postgresUserBackend) GetFileByPath(fullPath, label string) ([]byte, error) {
+func (b *postgresUserBackend) GetFileByPath(app, fullPath, label string) ([]byte, error) {
 	// Clean the path: remove leading/trailing slashes, reject traversal.
 	cleanPath := strings.Trim(fullPath, "/")
 	if !IsValidRelativePath(cleanPath) {
@@ -273,12 +275,16 @@ func (b *postgresUserBackend) GetFileByPath(fullPath, label string) ([]byte, err
 	// the same file path has been uploaded with multiple labels. The unique
 	// constraint (username, app, profile, label, ext, path) means multiple
 	// rows can share the same path but have different labels.
+	// We also filter by app to avoid returning files from other apps.
 	q := fmt.Sprintf(
-		"SELECT content FROM %s WHERE username=$1 AND path=$2 AND label=$3",
+		"SELECT content FROM %s WHERE username=$1 AND app=$2 AND path=$3 AND label=$4",
 		b.table,
 	)
+	fmt.Fprintf(os.Stderr, "[DEBUG postgres GetFileByPath] username=%q app=%q path=%q label=%q\n", b.username, app, cleanPath, label)
+	fmt.Fprintf(os.Stderr, "[DEBUG postgres GetFileByPath] query: %s\n", q)
+	fmt.Printf("[DEBUG PG GetFileByPath] query: %s params=[%q, %q, %q, %q]\n", q, b.username, app, cleanPath, label)
 	var content []byte
-	err := b.db.QueryRow(context.Background(), q, b.username, cleanPath, label).Scan(&content)
+	err := b.db.QueryRow(context.Background(), q, b.username, app, cleanPath, label).Scan(&content)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotExist
 	}

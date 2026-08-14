@@ -251,14 +251,14 @@ func (a *App) Handler() http.Handler {
 //
 // The optional label parameter is used for filtering when multiple labels
 // exist for the same path (e.g., postgres rows with same path but different label).
-func RawFileHandler(w http.ResponseWriter, r *http.Request, app *App, be backend.Backend, relPath, label string, user *UserConfig) {
+func RawFileHandler(w http.ResponseWriter, r *http.Request, appCfg *App, be backend.Backend, app, relPath, label string, user *UserConfig) {
 	// Validate the relative path to prevent path traversal attacks.
 	if !lib.IsValidRelativePath(relPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
-	data, err := be.GetFileByPath(relPath, label)
+	data, err := be.GetFileByPath(app, relPath, label)
 	if backend.IsNotExist(err) {
 		http.Error(w, fmt.Sprintf("File not found: %s", relPath), http.StatusNotFound)
 		return
@@ -303,7 +303,9 @@ func (a *App) pathServingHandler(w http.ResponseWriter, r *http.Request) {
 		label = pathParts[2]
 	}
 
-	RawFileHandler(w, r, a, be, relPath, label, user)
+	// Extract app as the first segment
+	app := strings.Split(relPath, "/")[0]
+	RawFileHandler(w, r, a, be, app, relPath, label, user)
 }
 
 // Process cipher patterns in content.
@@ -584,7 +586,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Fall through to path-based file serving
-		serveFile(w, be, paths[0], "", r, user)
+		serveFile(w, be, paths[0], paths[0], "", r, user)
 		return
 	case pathsLen == 2:
 		// Check if client wants raw content via Accept header
@@ -647,7 +649,7 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		// Only treat as raw file path if it's a single filename (no slashes)
 		if strings.Contains(paths[2], ".") && !strings.Contains(paths[2], "/") {
 			// Serve as raw file by path — paths[2] is the filename itself
-			serveFile(w, be, paths[2], "", r, user)
+			serveFile(w, be, paths[0], paths[2], "", r, user)
 			return
 		}
 		if acceptsRawContent {
@@ -726,35 +728,41 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	case pathsLen > 3:
 		// Multi-segment path: /{app}/{profile}/{label}/{path}
-		// paths[3:] is the raw file path (e.g., paths[3] for simple 4-part, paths[3], paths[4] for deeper)
+		//
+		// The path is always interpreted as /{app}/{profile}/{label}/{re-path}/<to>/<file>.
+		//
+		//   1. Try GetFileByPath with paths[2] as the label and strings.Join(paths[3:], "/") as the file path.
+		//   2. If not found AND useDefaultLabel is set, fall back to the default label.
+		//   3. If still not found → 404.
+
+		app := paths[0]
 		label := paths[2]
 		filePath := strings.Join(paths[3:], "/")
-		if acceptsRawContent {
-			// Plain text raw file endpoint: serve ONLY the file at the exact path.
-			// No fallback to config file lookup — if the path doesn't exist, return 404.
-			data, err := be.GetFileByPath(filePath, label)
+
+		data, err := be.GetFileByPath(app, filePath, label)
+		if backend.IsNotExist(err) {
+			if r.URL.Query().Has("useDefaultLabel") && user.DefaultLabel != "" {
+				data, err = be.GetFileByPath(app, filePath, user.DefaultLabel)
+			}
 			if backend.IsNotExist(err) {
-				http.Error(w, fmt.Sprintf("File not found: %s", filePath), http.StatusNotFound)
+				http.Error(w, "File not found", http.StatusNotFound)
 				return
 			}
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
-				return
-			}
-			content := string(data)
-
-			// If decrypt=true query parameter is set, decrypt cipher values in the content.
-			if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
-				content = processCipherPatterns(content, user)
-			}
-
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write([]byte(content))
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error reading file: %s", err), http.StatusInternalServerError)
 			return
 		}
-		// Non-raw: multi-segment path: /{app}/{profile}/{label}/{path}
-		// Build the full relative path from everything after app/profile
-		serveFile(w, be, filePath, label, r, user)
+
+		content := string(data)
+
+		// If decrypt=true query parameter is set, decrypt cipher values in the content.
+		if r.URL.Query().Get("decrypt") == "true" && user.EncryptionKey != "" {
+			content = processCipherPatterns(content, user)
+		}
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte(content))
 		return
 	}
 }
@@ -764,8 +772,8 @@ func (a *App) getValuesHandler(w http.ResponseWriter, r *http.Request) {
 // in the file content are automatically decrypted before serving.
 // The label parameter is used for filtering when multiple labels exist
 // for the same path (e.g., postgres rows with same path but different label).
-func serveFile(w http.ResponseWriter, be backend.Backend, filename, label string, r *http.Request, user *UserConfig) {
-	data, err := be.GetFileByPath(filename, label)
+func serveFile(w http.ResponseWriter, be backend.Backend, app, filename, label string, r *http.Request, user *UserConfig) {
+	data, err := be.GetFileByPath(app, filename, label)
 	if backend.IsNotExist(err) {
 		http.Error(w, "File not found", http.StatusNotFound)
 		fmt.Printf("[ERROR] file not found: %s\n", filename)

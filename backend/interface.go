@@ -38,7 +38,7 @@ type Backend interface {
 	// GetValues format).
 	// The optional label parameter is used for filtering when multiple labels
 	// exist for the same path (e.g., postgres rows with same path but different label).
-	GetFileByPath(fullPath, label string) ([]byte, error)
+	GetFileByPath(app, fullPath, label string) ([]byte, error)
 
 	// ListFiles returns all config files known to this backend for this user.
 	// Not currently used by handlers — reserved for future admin endpoints.
